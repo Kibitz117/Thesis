@@ -18,6 +18,8 @@ import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
+#Question: Any more efficient way to do this than predict over whole dataset to obtain sharpe?
+
 def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_save_path="best_model.pth"):
     factory = ModelFactory()
     model, criterion = factory.create(model_name, task_type, loss_name)
@@ -107,7 +109,7 @@ def evaluate_model(model, data_splits, k, device):
 
 def main():
     model_name = 'transformer'
-    target = 'cross_sectional_median'
+    target = 'raw_return'
 
     # Load data
     df = pd.read_csv('../data/crsp_ff_adjusted.csv')
