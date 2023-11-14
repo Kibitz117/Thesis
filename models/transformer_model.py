@@ -21,62 +21,74 @@ class ScaledMultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.d_model = d_model
         self.head_dim = d_model // num_heads  # Dimension of each head: commonly referred to as d_k
-
         self.fc_q = nn.Linear(d_model, d_model)  # Query
         self.fc_k = nn.Linear(d_model, d_model)  # Key
         self.fc_v = nn.Linear(d_model, d_model)  # Value
-  # Value
+
         self.fc_o = nn.Linear(d_model, d_model)  # Output
 
-        self.relative_positional_encoding = RelativePositionalEncoding(self.head_dim)
+        self.relative_positional_encoding = RelativePositionalEncoding(self.d_model)
         self.reset_parameters()
     @staticmethod
     def create_look_ahead_mask(batch_size, sequence_length):
-        mask = torch.triu(torch.ones((sequence_length, sequence_length)), diagonal=1)
-        mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
-        return mask  # Returns 1 for positions to be attended to and 0 for positions to be masked
+        mask = torch.triu(torch.ones((sequence_length, sequence_length)), diagonal=0)
+        mask = mask.unsqueeze(0).unsqueeze(1)  # Add a dimension for num_heads
+        mask = mask.expand(batch_size, -1, -1, -1)  # The -1 keeps the existing dimensions
+        return mask  # mask shape is now [batch_size, 1, seq_length, seq_length]
+
 
 
     def forward(self, query, key, value, mask=None):
-        batch_size = query.shape[0]
-        length = query.size(1)
+        batch_size = query.size(0)
+        seq_length = query.size(1)
+        Q = self.fc_q(query).view(batch_size, seq_length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        K = self.fc_k(key).view(batch_size, seq_length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        V = self.fc_v(value).view(batch_size, seq_length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-
-        Q = self.fc_q(query).view(batch_size, -1, self.num_heads, self.head_dim)
-        K = self.fc_k(key).view(batch_size, -1, self.num_heads, self.head_dim)
-        V = self.fc_v(value).view(batch_size, -1, self.num_heads, self.head_dim)
-
-
-
-        # Calculate Q * K^T attention scores
-        attention_scores = torch.matmul(Q, K.transpose(-2, -1)) / np.sqrt(self.head_dim)
+        # Calculate attention scores with scaling for stability
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
         
-        # Incorporate relative positional embeddings
-        # Inside ScaledMultiHeadAttention's forward method
-       # Inside the ScaledMultiHeadAttention forward method:
-        # Inside the ScaledMultiHeadAttention forward method:
-        relative_positions_embeddings = self.relative_positional_encoding(length, batch_size, self.num_heads).to(query.device)
+        # Generate relative positional embeddings and scores
+        relative_pos_embeddings = self.relative_positional_encoding(seq_length, batch_size, self.num_heads)
+        relative_position_scores = self.compute_relative_position_scores(Q, relative_pos_embeddings)
+        scores += relative_position_scores
 
-         # Now add them to the attention scores
-
-
-        attention_scores = attention_scores + relative_positions_embeddings
-
-
-
-        # Apply mask (if provided)
         if mask is not None:
-            mask = mask.unsqueeze(1).unsqueeze(1) 
-
-
-            attention_scores = attention_scores.masked_fill(mask == 0, float('-1e10'))
+            scores = scores.masked_fill(mask == 0, float('-inf'))
         
-        # Calculate attention weights
-        attention_weights = torch.softmax(attention_scores, dim=-1)
+        # Apply softmax to get the attention weights
+        attention_weights = F.softmax(scores + 1e-9, dim=-1)
 
-        value_out = torch.matmul(attention_weights, V)
-        value_out = value_out.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
-        return self.fc_o(value_out)
+
+        # Apply attention to the value vector
+        output = torch.matmul(attention_weights, V)
+
+        # Concatenate heads and put through the final linear layer
+        output = output.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_length, self.d_model)
+        output = self.fc_o(output)
+
+        return output
+
+    def compute_relative_position_scores(self, query, relative_pos_embeddings):
+        # Extract batch_size, num_heads, seq_length, and head_dim from the query's shape
+        batch_size, num_heads, seq_length,head_dim= query.size()
+
+        # Ensure that relative positional embeddings have the correct shape
+        # relative_pos_embeddings shape expected: [batch_size, num_heads, seq_length, seq_length, head_dim]
+        assert relative_pos_embeddings.size() == (batch_size, num_heads, seq_length, seq_length, head_dim), \
+            "Shape mismatch in relative_pos_embeddings"
+
+        # Compute attention scores using einsum
+        attn_scores = torch.einsum('bhqd,bhqkd->bhqk', query, relative_pos_embeddings)
+
+        return attn_scores
+
+
+
+        
+
+
+
 
     def reset_parameters(self):
         self.fc_q.reset_parameters()
@@ -136,32 +148,36 @@ class EncoderLayer(nn.Module):
 #     def forward(self, x):
 #         return self.encoding[:, :x.size(1)].detach()
 class RelativePositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=250):
+    def __init__(self, d_model, max_len=500):
         super(RelativePositionalEncoding, self).__init__()
-        # Initialize the relative positions matrix for each position, not for each head
-        self.relative_positions_matrix = nn.Parameter(torch.randn((max_len * 2 - 1, d_model)), requires_grad=True)
         self.max_len = max_len
-        self.d_model = d_model  # Assume d_model is divisible by num_heads
+        self.d_model = d_model
+        self.embeddings_table = nn.Parameter(torch.Tensor(max_len * 2 + 1, d_model))
+        nn.init.xavier_uniform_(self.embeddings_table)
 
     def forward(self, length, batch_size, num_heads):
-        # Create a matrix for relative positions ranging from -length+1 to length-1
-        positions = torch.arange(length).unsqueeze(0) - torch.arange(length).unsqueeze(1)
-        # Shift values to be >= 0 and clamp to valid indices
-        positions = positions + self.max_len - 1
-        positions = positions.long().clamp_(0, self.max_len * 2 - 2)
-        
-        # Fetch the embeddings for the relative positions
-        relative_positions_embeddings = self.relative_positions_matrix.index_select(0, positions.view(-1))
-        relative_positions_embeddings = relative_positions_embeddings.view(length, length, -1)
-        
-        # Prepare for broadcasting over num_heads by adding an extra dimension for heads
-        relative_positions_embeddings = relative_positions_embeddings.unsqueeze(0).unsqueeze(0)
-        
-        # Expand embeddings to include batch size and the same encoding for all heads
-        relative_positions_embeddings = relative_positions_embeddings.expand(batch_size, num_heads, -1, -1, -1)
-        
-        # Now the shape of relative_positions_embeddings should be [batch_size, num_heads, seq_length, seq_length, d_model]
-        return relative_positions_embeddings
+        head_dim = self.d_model // num_heads
+        assert self.d_model % num_heads == 0, "d_model must be divisible by num_heads"
+
+        range_vec = torch.arange(length)
+        distance_mat = range_vec[None, :] - range_vec[:, None]
+        clipped_distance_mat = torch.clamp(distance_mat, -self.max_len, self.max_len)
+        relative_position_mat = clipped_distance_mat + self.max_len
+
+        embeddings = self.embeddings_table[relative_position_mat]
+
+        # Reshape to add the head dimension and permute to get the correct order
+        embeddings = embeddings.view(length, length, num_heads, head_dim).permute(2, 0, 1, 3)
+
+        # Expand to include the batch dimension
+        embeddings = embeddings.unsqueeze(0).expand(batch_size, -1, -1, -1, -1)
+
+        return embeddings
+
+
+
+
+
 
 
 
@@ -175,7 +191,7 @@ class TimeSeriesTransformer(nn.Module):
         self.d_model = d_model
         self.task_type = task_type
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
-        
+        self.input_projection = nn.Conv1d(in_channels=1, out_channels=d_model, kernel_size=3, padding=1)
         if task_type == 'classification':
             self.fc = nn.Linear(d_model, num_classes)
         else:  # regression
@@ -185,12 +201,20 @@ class TimeSeriesTransformer(nn.Module):
         # Ensure src is a float tensor
         src = src.float()
 
+        # Reshape src to match Conv1d input shape: (batch_size, channels, length)
+        src = src.permute(0, 2, 1)  # Now src shape is [batch_size, 1, sequence_length]
+
+        # Project input to d_model size using Conv1d
+        src = self.input_projection(src)  # [batch_size, d_model, sequence_length]
+
+        # Reshape src back to original sequence ordering: (batch_size, length, channels)
+        src = src.permute(0, 2, 1)  # Now src shape is [batch_size, sequence_length, d_model]
+
         # Scale input embeddings (removed positional encoding addition)
         src = src * math.sqrt(self.d_model)
 
         # Pass through each layer of the encoder
         for layer_idx, layer in enumerate(self.encoder_layers):
-
             src = layer(src, src_mask)
 
         # Capture the context from the last time step of the encoded sequence
@@ -203,4 +227,5 @@ class TimeSeriesTransformer(nn.Module):
             output = nn.functional.log_softmax(output, dim=-1)
 
         return output
+
 
