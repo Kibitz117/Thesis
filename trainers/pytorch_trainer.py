@@ -8,21 +8,85 @@ from tqdm import tqdm
 import sys
 import math
 from datetime import datetime
-sys.path.append('../models')
-sys.path.append('../data_func')
+sys.path.append('utils')
+sys.path.append('models')
+sys.path.append('data_func')
 from data_helper_functions import create_study_periods,create_tensors
-from model_factory import create
-
+from model_factory import ModelFactory
+from transformer_model import ScaledMultiHeadAttention
+from sharpe_loss import SharpeLoss
 import torch.optim as optim
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-#Question: Any more efficient way to do this than predict over whole dataset to obtain sharpe?
+import torch
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
+from tqdm import tqdm
+import numpy as np
+import torch.nn.functional as F
 
-def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_save_path="best_model.pth"):
+def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=1, reward=1.0, rejection_threshold=0.5):
     factory = ModelFactory()
-    model, criterion = factory.create(model_name, task_type, loss_name)
+    model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
+    model = model.to(device)
+
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    n_epochs = 10
+
+    for epoch in range(n_epochs):
+        model.train()
+        total_train_loss = 0.0
+        total_coverage = 0.0
+        total_samples = 0
+
+
+        for train_data, train_labels, _, _ in tqdm(train_test_splits):
+            train_dataset = TensorDataset(train_data, train_labels)
+            train_loader = DataLoader(train_dataset, batch_size=16, shuffle=False)
+
+            train_loss = 0.0
+            for data, labels in train_loader:
+                data, labels = data.to(device), labels.to(device)
+                optimizer.zero_grad()
+
+                outputs = model(data)
+                outputs = F.softmax(outputs, dim=1)
+                if epoch >= pretrain_epochs:
+                    outputs, reservation = outputs[:, :-1], outputs[:, -1]
+                    gain = torch.gather(outputs, dim=1, index=labels.unsqueeze(1)).squeeze()
+                    doubling_rate = (gain.add(reservation.div(reward))).log()
+                    loss = -doubling_rate.mean()
+
+                    # Calculate coverage
+                    accepted = (reservation < rejection_threshold).float()
+                    total_coverage += accepted.sum().item()
+                else:
+                    loss = criterion(outputs[:, :-1], labels)
+
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item() * data.size(0)
+                total_samples += data.size(0)
+
+            total_train_loss += train_loss / len(train_loader.dataset)
+
+        average_train_loss = total_train_loss / len(train_test_splits)
+        coverage = total_coverage / total_samples
+        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_train_loss:.4f}, Coverage: {coverage:.2f}')
+
+        torch.save(model.state_dict(), model_save_path)
+
+    best_model_state = torch.load(model_save_path, map_location=device)
+    model.load_state_dict(best_model_state)
+    return model
+
+
+
+def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth"):
+    factory = ModelFactory()
+    model, criterion = factory.create(model_name, task_type, loss_name,model_config=model_config)
     model = model.to(device)
     
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -38,17 +102,19 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
 
         for train_data, train_labels, val_data, val_labels in tqdm(train_test_splits):
             train_dataset = TensorDataset(train_data, train_labels)
-            train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+            train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
 
             val_dataset = TensorDataset(val_data, val_labels)
             val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+            train_mask = ScaledMultiHeadAttention.create_look_ahead_mask(batch_size=train_data.size(0), sequence_length=train_data.size(1))
+            val_mask = ScaledMultiHeadAttention.create_look_ahead_mask(batch_size=val_data.size(0), sequence_length=val_data.size(1))
 
             # Train step
             train_loss = 0.0
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
                 optimizer.zero_grad()
-                outputs = model(data)
+                outputs = model(data).squeeze()
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
@@ -61,7 +127,7 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
             with torch.no_grad():
                 for data, labels in val_loader:
                     data, labels = data.to(device), labels.to(device)
-                    outputs = model(data)
+                    outputs = model(data).squeeze()
                     loss = criterion(outputs, labels)
                     val_loss += loss.item() * data.size(0)
             total_val_loss += val_loss / len(val_loader.dataset)
@@ -88,57 +154,100 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
     model.load_state_dict(best_model_state)
     return model
 
+#Goal with this would then be to see what model predicts right, wrong, and rejects. Then merge industry, and scatter plot to see if industry and rejection correlate
+def selective_test(model_name, task_type, loss_name, test_loader, device, model_config={}, model_save_path="best_model.pth", reward=1.0, coverage_thresholds=[0.1, 0.2, 0.5, 0.7, 0.9]):
+    factory = ModelFactory()
+    model, _ = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
+    model.load_state_dict(torch.load(model_save_path, map_location=device))
+    model = model.to(device)
+    model.eval()
 
-def evaluate_model(model, data_splits, k, device):
-    in_sample_long_portfolios = pd.DataFrame()
-    out_of_sample_long_portfolios = pd.DataFrame()
-    in_sample_short_portfolios = pd.DataFrame()
-    out_of_sample_short_portfolios = pd.DataFrame()
-    
-    for train_data, train_labels, val_data, val_labels in tqdm(data_splits):
-        train_probs, val_probs, train_df, val_df = model.get_predictions(train_data, train_labels, val_data, val_labels, device)
-        in_sample_long, in_sample_short = model.create_portfolios(train_df, train_probs, k)
-        out_of_sample_long, out_of_sample_short = model.create_portfolios(val_df, val_probs, k)
-        
-        in_sample_long_portfolios = pd.concat([in_sample_long_portfolios, in_sample_long])
-        in_sample_short_portfolios = pd.concat([in_sample_short_portfolios, in_sample_short])
-        out_of_sample_long_portfolios = pd.concat([out_of_sample_long_portfolios, out_of_sample_long])
-        out_of_sample_short_portfolios = pd.concat([out_of_sample_short_portfolios, out_of_sample_short])
-    
-    return in_sample_long_portfolios, in_sample_short_portfolios, out_of_sample_long_portfolios, out_of_sample_short_portfolios
+    # Store predictions, labels, and reservation probabilities
+    all_labels = []
+    all_predictions = []
+    all_reservations = []
+
+    with torch.no_grad():
+        for data, labels in test_loader:
+            data, labels = data.to(device), labels.to(device)
+
+            outputs = model(data)
+            outputs = F.softmax(outputs, dim=1)
+
+            class_probabilities, reservation = outputs[:, :-1], outputs[:, -1]
+            predictions = torch.argmax(class_probabilities, dim=1)
+
+            all_labels.extend(labels.cpu().numpy())
+            all_predictions.extend(predictions.cpu().numpy())
+            all_reservations.extend(reservation.cpu().numpy())
+
+    # Convert lists to numpy arrays for easier manipulation
+    all_labels = np.array(all_labels)
+    all_predictions = np.array(all_predictions)
+    all_reservations = np.array(all_reservations)
+
+    # Evaluate model's accuracy and coverage/selectiveness
+    for threshold in coverage_thresholds:
+        mask = all_reservations <= threshold
+        covered_labels = all_labels[mask]
+        covered_predictions = all_predictions[mask]
+
+        if len(covered_labels) > 0:
+            accuracy = np.mean(covered_labels == covered_predictions)
+            coverage = len(covered_labels) / len(all_labels)
+            print(f"Coverage: {coverage:.2f}, Accuracy at threshold {threshold}: {accuracy:.2f}")
+        else:
+            print(f"No predictions made at threshold {threshold}")
+
+    return all_labels, all_predictions, all_reservations
+
 
 def main():
+    #Parameters
     model_name = 'transformer'
-    target = 'raw_return'
+    target = 'cross_sectional_median'
+    if target=='cross_sectional_median':
+        loss_func = 'nll'
+    else:
+        loss_func = 'mse'
+    model_config={
+        'd_model': 16,
+        'num_heads': 4,
+        'd_ff': 32,
+        'num_encoder_layers': 1,
+        'dropout': .1,
+
+    }
+     # Check if CUDA, MPS, or CPU should be used
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
 
     # Load data
-    df = pd.read_csv('../data/crsp_ff_adjusted.csv')
+    df = pd.read_csv('data/crsp_ff_adjusted.csv')
     df['date'] = pd.to_datetime(df['date'])
     df.dropna(subset=['RET'], inplace=True)
     df = df.drop(columns='Unnamed: 0')
+    #subset df to 2014-2015
+    df = df[df['date'] >= datetime(2014, 1, 1)]
     
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
                                          start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target)
     train_test_splits, task_types = create_tensors(study_periods)
 
-    # Check if CUDA, MPS, or CPU should be used
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device:", device)
-    if target=='cross_sectional_median':
-        loss_func = 'nll'
-    else:
-        loss_func = 'mse'
-    #TODO:Add support for selective loss and sharpe loss
-    model = train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device)
 
-    in_sample_long_portfolios, in_sample_short_portfolios, out_of_sample_long_portfolios, out_of_sample_short_portfolios = evaluate_model(model, train_test_splits, k=10, device=device)
+    #TODO:Add support for selective loss and sharpe loss
+    model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
+    #export model config
+    torch.save(model.state_dict(), 'model_state_dict.pth')
+
+    # in_sample_long_portfolios, in_sample_short_portfolios, out_of_sample_long_portfolios, out_of_sample_short_portfolios = evaluate_model(model, train_test_splits, k=10, device=device)
 
     # Export portfolios
-    in_sample_long_portfolios.to_csv(f'../data/{model_name}_results/in_sample_long_portfolios.csv')
-    in_sample_short_portfolios.to_csv(f'../data/{model_name}_results/in_sample_short_portfolios.csv')
-    out_of_sample_long_portfolios.to_csv(f'../data/{model_name}_results/out_of_sample_long_portfolios.csv')
-    out_of_sample_short_portfolios.to_csv(f'../data/{model_name}_results/out_of_sample_short_portfolios.csv')
+    # in_sample_long_portfolios.to_csv(f'../data/{model_name}_results/in_sample_long_portfolios.csv')
+    # in_sample_short_portfolios.to_csv(f'../data/{model_name}_results/in_sample_short_portfolios.csv')
+    # out_of_sample_long_portfolios.to_csv(f'../data/{model_name}_results/out_of_sample_long_portfolios.csv')
+    # out_of_sample_short_portfolios.to_csv(f'../data/{model_name}_results/out_of_sample_short_portfolios.csv')
 
 if __name__ == "__main__":
     main()
