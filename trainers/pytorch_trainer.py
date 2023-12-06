@@ -27,20 +27,25 @@ from tqdm import tqdm
 import numpy as np
 import torch.nn.functional as F
 
-def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=1, reward=1.0, rejection_threshold=0.5):
+import torch
+from torch.utils.data import TensorDataset, DataLoader
+from tqdm import tqdm
+
+def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=1, initial_reward=6.0, min_coverage=0.3):
     factory = ModelFactory()
     model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
     model = model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     n_epochs = 10
+    reward = initial_reward
+    dynamic_threshold = 0.5  # Initial dynamic rejection threshold
 
     for epoch in range(n_epochs):
         model.train()
         total_train_loss = 0.0
         total_coverage = 0.0
         total_samples = 0
-
 
         for train_data, train_labels, _, _ in tqdm(train_test_splits):
             train_dataset = TensorDataset(train_data, train_labels)
@@ -50,7 +55,7 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
                 optimizer.zero_grad()
-
+#TODO: Look at how reservations are calculated, see how confidence should be calculated, adjust loss or reward
                 outputs = model(data)
                 outputs = F.softmax(outputs, dim=1)
                 if epoch >= pretrain_epochs:
@@ -60,7 +65,7 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
                     loss = -doubling_rate.mean()
 
                     # Calculate coverage
-                    accepted = (reservation < rejection_threshold).float()
+                    accepted = (reservation < dynamic_threshold).float()
                     total_coverage += accepted.sum().item()
                 else:
                     loss = criterion(outputs[:, :-1], labels)
@@ -72,15 +77,22 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
             total_train_loss += train_loss / len(train_loader.dataset)
 
-        average_train_loss = total_train_loss / len(train_test_splits)
-        coverage = total_coverage / total_samples
+        average_train_loss = total_train_loss / len(train_test_splits)  # Calculate average loss
+        coverage = total_coverage / total_samples if total_samples > 0 else 0  # Calculate coverage
+
         print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_train_loss:.4f}, Coverage: {coverage:.2f}')
+
+        # Adjust dynamic threshold and reward based on coverage
+        if coverage < min_coverage and total_samples > 0:
+            dynamic_threshold *= 0.9  # Decrease threshold to be less conservative
+            reward *= 0.9  # Decrease reward to make rejecting less favorable
 
         torch.save(model.state_dict(), model_save_path)
 
     best_model_state = torch.load(model_save_path, map_location=device)
     model.load_state_dict(best_model_state)
     return model
+
 
 
 
@@ -206,6 +218,7 @@ def main():
     #Parameters
     model_name = 'transformer'
     target = 'cross_sectional_median'
+    selective=True
     if target=='cross_sectional_median':
         loss_func = 'nll'
     else:
@@ -236,8 +249,12 @@ def main():
     train_test_splits, task_types = create_tensors(study_periods)
 
 
-    #TODO:Add support for selective loss and sharpe loss
-    model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
+    if selective==True:
+        model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
+        #Test method
+    else:
+        model=train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
+        #Test method
     #export model config
     torch.save(model.state_dict(), 'model_state_dict.pth')
 
