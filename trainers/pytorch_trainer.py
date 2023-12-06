@@ -40,6 +40,10 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
     n_epochs = 10
     reward = initial_reward
     dynamic_threshold = 0.5  # Initial dynamic rejection threshold
+    if device=='cuda':
+        num_workers=4
+    else:
+        num_workers=1
 
     for epoch in range(n_epochs):
         model.train()
@@ -57,7 +61,7 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
                 optimizer.zero_grad()
 #TODO: Look at how reservations are calculated, see how confidence should be calculated, adjust loss or reward
                 outputs = model(data)
-                outputs = F.softmax(outputs, dim=1)
+                outputs = F.softmax(outputs, dim=1)#Convert to probabilities
                 if epoch >= pretrain_epochs:
                     outputs, reservation = outputs[:, :-1], outputs[:, -1]
                     gain = torch.gather(outputs, dim=1, index=labels.unsqueeze(1)).squeeze()
