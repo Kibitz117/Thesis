@@ -53,26 +53,33 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
         for train_data, train_labels, _, _ in tqdm(train_test_splits):
             train_dataset = TensorDataset(train_data, train_labels)
-            train_loader = DataLoader(train_dataset, batch_size=16, shuffle=False)
+            train_loader = DataLoader(train_dataset, batch_size=16, shuffle=False,num_workers=num_workers)
 
             train_loss = 0.0
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
                 optimizer.zero_grad()
-#TODO: Look at how reservations are calculated, see how confidence should be calculated, adjust loss or reward
-                outputs = model(data)
-                outputs = F.softmax(outputs, dim=1)#Convert to probabilities
+
+                # Get both outputs from the model
+                main_output, reservation = model(data)
+
+                # Convert main output to probabilities for classification task
+                if task_type == 'classification':
+                    main_output = F.softmax(main_output, dim=1)
+
                 if epoch >= pretrain_epochs:
-                    outputs, reservation = outputs[:, :-1], outputs[:, -1]
-                    gain = torch.gather(outputs, dim=1, index=labels.unsqueeze(1)).squeeze()
-                    doubling_rate = (gain.add(reservation.div(reward))).log()
+                    gain = torch.gather(main_output, dim=1, index=labels.unsqueeze(1)).squeeze()
+                    doubling_rate = (gain.add(reservation.div(reward + 1e-8))).log()
+
                     loss = -doubling_rate.mean()
 
                     # Calculate coverage
                     accepted = (reservation < dynamic_threshold).float()
                     total_coverage += accepted.sum().item()
                 else:
-                    loss = criterion(outputs[:, :-1], labels)
+                    # Handle the case for regression or pre-training epochs
+                    # Modify this part if your regression task requires a different loss calculation
+                    loss = criterion(main_output, labels)
 
                 loss.backward()
                 optimizer.step()
@@ -81,8 +88,9 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
             total_train_loss += train_loss / len(train_loader.dataset)
 
+
         average_train_loss = total_train_loss / len(train_test_splits)  # Calculate average loss
-        coverage = total_coverage / total_samples if total_samples > 0 else 0  # Calculate coverage
+        coverage = total_coverage / total_samples if total_coverage > 0 else 0  # Calculate coverage
 
         print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_train_loss:.4f}, Coverage: {coverage:.2f}')
 
@@ -100,63 +108,49 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
 
 
-def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth"):
+def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=1):
     factory = ModelFactory()
-    model, criterion = factory.create(model_name, task_type, loss_name,model_config=model_config)
+    model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config)
     model = model.to(device)
-    
+
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    n_epochs = 1000
+    n_epochs = 1000  # or any other number of epochs you want
     patience = 5
     best_loss = np.inf
     counter = 0
+#USE RSYNC TO MOVE FILES TO VM
+    if device == 'cuda':
+        num_workers = 4
+    else:
+        num_workers = 1
 
     for epoch in range(n_epochs):
         model.train()
         total_train_loss = 0.0
-        total_val_loss = 0.0
 
-        for train_data, train_labels, val_data, val_labels in tqdm(train_test_splits):
+        for train_data, train_labels, _, _ in tqdm(train_test_splits):
             train_dataset = TensorDataset(train_data, train_labels)
-            train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
+            train_loader = DataLoader(train_dataset, batch_size=16, shuffle=False, num_workers=num_workers)
 
-            val_dataset = TensorDataset(val_data, val_labels)
-            val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-            train_mask = ScaledMultiHeadAttention.create_look_ahead_mask(batch_size=train_data.size(0), sequence_length=train_data.size(1))
-            val_mask = ScaledMultiHeadAttention.create_look_ahead_mask(batch_size=val_data.size(0), sequence_length=val_data.size(1))
-
-            # Train step
             train_loss = 0.0
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
                 optimizer.zero_grad()
-                outputs = model(data).squeeze()
+
+                outputs = model(data)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item() * data.size(0)
+
             total_train_loss += train_loss / len(train_loader.dataset)
 
-            # Validation step
-            model.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for data, labels in val_loader:
-                    data, labels = data.to(device), labels.to(device)
-                    outputs = model(data).squeeze()
-                    loss = criterion(outputs, labels)
-                    val_loss += loss.item() * data.size(0)
-            total_val_loss += val_loss / len(val_loader.dataset)
-
         average_train_loss = total_train_loss / len(train_test_splits)
-        average_val_loss = total_val_loss / len(train_test_splits)
-        
-        print(f'Epoch {epoch+1}/{n_epochs}, '
-              f'Average Train Loss: {average_train_loss:.4f}, '
-              f'Average Validation Loss: {average_val_loss:.4f}')
 
-        if average_val_loss < best_loss:
-            best_loss = average_val_loss
+        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_train_loss:.4f}')
+
+        if average_train_loss < best_loss:
+            best_loss = average_train_loss
             torch.save(model.state_dict(), model_save_path)
             counter = 0
         else:
@@ -169,6 +163,7 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
     best_model_state = torch.load(model_save_path, map_location=device)
     model.load_state_dict(best_model_state)
     return model
+
 
 #Goal with this would then be to see what model predicts right, wrong, and rejects. Then merge industry, and scatter plot to see if industry and rejection correlate
 def selective_test(model_name, task_type, loss_name, test_loader, device, model_config={}, model_save_path="best_model.pth", reward=1.0, coverage_thresholds=[0.1, 0.2, 0.5, 0.7, 0.9]):

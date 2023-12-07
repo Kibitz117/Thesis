@@ -197,6 +197,7 @@ class TimeSeriesTransformer(nn.Module):
             self.fc = nn.Linear(d_model, num_classes)  #For selective ML TODO: Make selective parameter
         else:  # regression
             self.fc = nn.Linear(d_model, 1)
+        self.reservation_fc = nn.Linear(d_model, 1)
 
     def forward(self, src, src_mask=None):
         # Ensure src is a float tensor
@@ -221,12 +222,14 @@ class TimeSeriesTransformer(nn.Module):
         # Capture the context from the last time step of the encoded sequence
         context = src[:, -1, :]
         
-        # Final linear layer
-        output = self.fc(context)
+        # Final linear layer for main output
+        main_output = self.fc(context)
 
-        # if self.task_type == 'classification':
-        #     return output
+        # Reservation score output
+        reservation_output = self.reservation_fc(context)
 
-        return output
+        # Return both outputs
+        return main_output, reservation_output
+
 
 
