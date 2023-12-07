@@ -194,7 +194,7 @@ class TimeSeriesTransformer(nn.Module):
         #Changes input projection to 1d convolution to capture short term patterns (previously linear layer)
         self.input_projection = nn.Conv1d(in_channels=1, out_channels=d_model, kernel_size=3, padding=1)
         if task_type == 'classification':
-            self.fc = nn.Linear(d_model, num_classes)  #For selective ML TODO: Make selective parameter
+            self.fc = nn.Linear(d_model, 1)  #For selective ML TODO: Make selective parameter
         else:  # regression
             self.fc = nn.Linear(d_model, 1)
         self.reservation_fc = nn.Linear(d_model, 1)

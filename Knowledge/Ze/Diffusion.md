@@ -1,0 +1,6 @@
+- migration of matter from high concentration to low concentration
+- over short distances it is fast, but slow for long distances
+- ![Image result for diffusion](https://th.bing.com/th/id/OIP.jy9s9KXOIXgMTNrlA8dbGAHaEh?w=268&h=180&c=7&r=0&o=5&dpr=2&pid=1.7)
+- The rate of movement depends of [[Fick's First Law]]
+- [[Diffusion across membrane]]
+- 

@@ -136,9 +136,9 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
                 optimizer.zero_grad()
-
-                outputs = model(data)
-                loss = criterion(outputs, labels)
+                outputs,_ = model(data)
+                outputs=outputs.squeeze()
+                loss = criterion(outputs, labels.float()) 
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item() * data.size(0)
@@ -217,9 +217,9 @@ def main():
     #Parameters
     model_name = 'transformer'
     target = 'cross_sectional_median'
-    selective=True
+    selective=False
     if target=='cross_sectional_median':
-        loss_func = 'nll'
+        loss_func = 'bce'
     else:
         loss_func = 'mse'
     model_config={

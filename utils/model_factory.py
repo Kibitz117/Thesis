@@ -14,7 +14,7 @@ class ModelFactory:
             # Add other models here
         }
         self.losses = {
-            'nll': nn.NLLLoss(),
+            'bce': nn.BCEWithLogitsLoss(),
             'mse': nn.MSELoss(),
             'sharpe': SharpeLoss(),
             'selective': SelectiveLoss(loss_func=nn.MSELoss(),coverage=.8),
