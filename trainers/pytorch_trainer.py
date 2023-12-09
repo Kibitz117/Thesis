@@ -31,7 +31,7 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=1, initial_reward=6.0, min_coverage=0.3):
+def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=0, initial_reward=6.0, min_coverage=0.3):
     factory = ModelFactory()
     model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
     model = model.to(device)
@@ -40,6 +40,9 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
     n_epochs = 10
     reward = initial_reward
     dynamic_threshold = 0.5  # Initial dynamic rejection threshold
+    penalty_factor = 1.0  # Example value, adjust based on experimentation
+    accuracy_boost_factor = 1.0  # Example value, adjust based on experimentation
+
     if device=='cuda':
         num_workers=4
         batch_size = 128
@@ -64,41 +67,35 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
             train_loss = 0.0
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
+                labels = labels.view(-1, 1).float()
                 optimizer.zero_grad()
 
-                # Get both outputs from the model
                 main_output, reservation = model(data)
+                probabilities = torch.sigmoid(main_output) 
+                gain = torch.where(labels == 1, probabilities, 1 - probabilities)
 
-                # Convert main output to probabilities for classification task
-                if task_type == 'classification':
-                    main_output = F.softmax(main_output, dim=1)
+                doubling_rate = (gain + reservation.div(reward + 1e-8)).log()
+                base_loss = -doubling_rate.mean()
 
-                if epoch >= pretrain_epochs:
-                    gain = torch.gather(main_output, dim=1, index=labels.unsqueeze(1)).squeeze()
-                    doubling_rate = (gain.add(reservation.div(reward + 1e-8))).log()
-                    loss = -doubling_rate.mean()
+                # Calculate coverage
+                accepted = (reservation < dynamic_threshold).float()
+                coverage = accepted.sum().item() / data.size(0)
 
-                    # Calculate coverage
-                    accepted = (reservation < dynamic_threshold).float()
-                    total_coverage += accepted.sum().item()
-                else:
-                    loss = criterion(main_output, labels)
+                # Penalize for low coverage
+                coverage_penalty = max(0, min_coverage - coverage) * penalty_factor  # penalty_factor is a hyperparameter
+
+                # Incorporate accuracy into the loss
+                predictions = torch.round(probabilities)
+                accuracy_term = (predictions == labels).float().mean()
+                accuracy_reward = accuracy_boost_factor * accuracy_term  # accuracy_boost_factor is a hyperparameter
+
+                # Combined loss
+                loss = base_loss + coverage_penalty - accuracy_reward
 
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item() * data.size(0)
-
-                # Calculate correct and incorrect predictions
-                predictions = torch.argmax(main_output, dim=1)
-                correct = predictions == labels
-                incorrect = ~correct
-
-                # Update reservation score sums and counts
-                total_reservation_correct += reservation[correct].sum().item()
-                total_reservation_incorrect += reservation[incorrect].sum().item()
-                count_correct += correct.sum().item()
-                count_incorrect += incorrect.sum().item()
-                total_samples += data.size(0)
+                total_coverage += coverage
 
             total_train_loss += train_loss / len(train_loader.dataset)
 
@@ -123,7 +120,7 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
 
 
-def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=1):
+def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth"):
     factory = ModelFactory()
     model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config)
     model = model.to(device)
@@ -154,16 +151,19 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
             train_loss = 0.0
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
+                labels = labels.view(-1, 1).float()
+
                 optimizer.zero_grad()
                 outputs, _ = model(data)
-                outputs = outputs.squeeze()
-                loss = criterion(outputs, labels.float()) 
+                # outputs = outputs.squeeze()
+                loss = criterion(outputs, labels) 
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item() * data.size(0)
 
                 # Calculate accuracy
-                preds = torch.sigmoid(outputs) >= 0.5  # Convert logits to binary predictions
+                preds = torch.sigmoid(outputs) >= 0.5
+                preds = preds.view(-1,1).float()  # Reshape and convert to float for comparison
                 total_correct += (preds == labels).sum().item()
                 total_samples += labels.size(0)
 
@@ -241,8 +241,9 @@ def selective_test(model_name, task_type, loss_name, test_loader, device, model_
 def main():
     #Parameters
     model_name = 'transformer'
+    #cross_sectional_median, raw_returns, buckets
     target = 'cross_sectional_median'
-    selective=False
+    selective=True
     if target=='cross_sectional_median':
         loss_func = 'bce'
     else:
