@@ -227,6 +227,8 @@ class TimeSeriesTransformer(nn.Module):
 
         # Reservation score output
         reservation_output = self.reservation_fc(context)
+        #Sigmoid the reservation score so we get confidence probability
+        reservation_output=F.sigmoid(reservation_output)
 
         # Return both outputs
         return main_output, reservation_output

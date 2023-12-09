@@ -31,7 +31,7 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=0, initial_reward=6.0, min_coverage=0.3):
+def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=3, initial_reward=6.0, min_coverage=0.3):
     factory = ModelFactory()
     model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
     model = model.to(device)
@@ -39,83 +39,96 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     n_epochs = 10
     reward = initial_reward
-    dynamic_threshold = 0.5  # Initial dynamic rejection threshold
-    penalty_factor = 1.0  # Example value, adjust based on experimentation
-    accuracy_boost_factor = 1.0  # Example value, adjust based on experimentation
+    dynamic_threshold = 0.9  # Adjusted initial dynamic rejection threshold
+    penalty_factor = 60.0  # Adjusted hyperparameter for coverage penalty
+    accuracy_boost_factor = 3.0  # Adjusted hyperparameter for accuracy reward
 
-    if device=='cuda':
-        num_workers=4
+    best_loss = float('inf')
+    best_model_state = None
+
+    if device == 'cuda':
+        num_workers = 4
         batch_size = 128
     else:
-        num_workers=1
+        num_workers = 1
         batch_size = 16
 
     for epoch in range(n_epochs):
         model.train()
-        total_train_loss = 0.0
-        total_coverage = 0.0
-        total_samples = 0
-        total_reservation_correct = 0.0
-        total_reservation_incorrect = 0.0
-        count_correct = 0
-        count_incorrect = 0
+        total_train_loss, total_coverage, total_samples = 0.0, 0.0, 0
+        total_non_rejected_correct, total_non_rejected_samples = 0, 0
 
-        for train_data, train_labels, _, _ in tqdm(train_test_splits):
+        for train_data, train_labels ,_, _ in tqdm(train_test_splits):
             train_dataset = TensorDataset(train_data, train_labels)
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-            train_loss = 0.0
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
                 labels = labels.view(-1, 1).float()
                 optimizer.zero_grad()
 
                 main_output, reservation = model(data)
-                probabilities = torch.sigmoid(main_output) 
-                gain = torch.where(labels == 1, probabilities, 1 - probabilities)
 
-                doubling_rate = (gain + reservation.div(reward + 1e-8)).log()
-                base_loss = -doubling_rate.mean()
+                if epoch < pretrain_epochs:
+                    # Pretraining phase without rejection option
+                    probabilities = torch.sigmoid(main_output)
+                    loss = criterion(probabilities, labels)
+                else:
+                    # Regular training with selective mechanism
+                    probabilities = torch.sigmoid(main_output)
+                    gain = torch.where(labels == 1, probabilities, 1 - probabilities)
 
-                # Calculate coverage
-                accepted = (reservation < dynamic_threshold).float()
-                coverage = accepted.sum().item() / data.size(0)
+                    doubling_rate = (gain + reservation.div(reward + 1e-8)).log()
+                    base_loss = -doubling_rate.mean()
 
-                # Penalize for low coverage
-                coverage_penalty = max(0, min_coverage - coverage) * penalty_factor  # penalty_factor is a hyperparameter
+                    # Calculate coverage and accuracy for non-rejected samples
+                    accepted = reservation < dynamic_threshold
+                    coverage = accepted.float().mean()
+                    predictions = torch.round(probabilities)
+                    correct_predictions = (predictions == labels).float()
+                    non_rejected_correct = (correct_predictions * accepted).sum()
 
-                # Incorporate accuracy into the loss
-                predictions = torch.round(probabilities)
-                accuracy_term = (predictions == labels).float().mean()
-                accuracy_reward = accuracy_boost_factor * accuracy_term  # accuracy_boost_factor is a hyperparameter
+                    # Update totals
+                    train_loss = base_loss.item() * data.size(0)
+                    total_train_loss += train_loss
+                    total_coverage += coverage.item() * data.size(0)
+                    total_samples += data.size(0)
+                    total_non_rejected_correct += non_rejected_correct.item()
+                    total_non_rejected_samples += accepted.sum().item()
 
-                # Combined loss
-                loss = base_loss + coverage_penalty - accuracy_reward
+                    # Penalty and rewards
+                    coverage_penalty = max(0, min_coverage - coverage) * penalty_factor
+                    accuracy_term = non_rejected_correct / accepted.sum()
+                    accuracy_reward = accuracy_boost_factor * accuracy_term
+                    loss = base_loss + coverage_penalty - accuracy_reward
 
                 loss.backward()
                 optimizer.step()
-                train_loss += loss.item() * data.size(0)
-                total_coverage += coverage
 
-            total_train_loss += train_loss / len(train_loader.dataset)
+            # Calculate and update best model state based on loss
+            average_loss = total_train_loss / total_samples
+            if average_loss < best_loss:
+                best_loss = average_loss
+                best_model_state = copy.deepcopy(model.state_dict())
 
-        average_train_loss = total_train_loss / len(train_test_splits)  # Calculate average loss
-        coverage = total_coverage / total_samples if total_coverage > 0 else 0  # Calculate coverage
-        average_reservation_correct = total_reservation_correct / count_correct if count_correct > 0 else 0
-        average_reservation_incorrect = total_reservation_incorrect / count_incorrect if count_incorrect > 0 else 0
-
-        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_train_loss:.4f}, Coverage: {coverage:.2f}, Avg Reservation Score (Correct): {average_reservation_correct:.4f}, Avg Reservation Score (Incorrect): {average_reservation_incorrect:.4f}')
+        # Print epoch metrics
+        average_coverage = total_coverage / total_samples
+        non_rejected_accuracy = total_non_rejected_correct / total_non_rejected_samples if total_non_rejected_samples > 0 else 0
+        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_loss:.4f}, '
+              f'Coverage: {average_coverage:.2f}, Non-Rejected Accuracy: {non_rejected_accuracy:.4f}')
 
         # Adjust dynamic threshold and reward based on coverage
-        if coverage < min_coverage and total_samples > 0:
-            dynamic_threshold *= 0.9  # Decrease threshold to be less conservative
-            reward *= 0.9  # Decrease reward to make rejecting less favorable
+        if average_coverage < min_coverage:
+            dynamic_threshold *= 0.9  # Decrease threshold
+            reward *= 0.9  # Decrease reward
 
-        torch.save(model.state_dict(), model_save_path)
+    if best_model_state is not None:
+        torch.save(best_model_state, model_save_path)
+        model.load_state_dict(best_model_state)
 
-    best_model_state = torch.load(model_save_path, map_location=device)
-    model.load_state_dict(best_model_state)
     return model
+
+
 
 
 
