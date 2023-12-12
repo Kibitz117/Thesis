@@ -185,7 +185,7 @@ class RelativePositionalEncoding(nn.Module):
 
 
 class TimeSeriesTransformer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, dropout=0.1, task_type='regression', num_classes=2):
+    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, dropout=0.1, task_type='regression', num_classes=1):
         super(TimeSeriesTransformer, self).__init__()
         
         self.d_model = d_model
@@ -193,8 +193,8 @@ class TimeSeriesTransformer(nn.Module):
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
         #Changes input projection to 1d convolution to capture short term patterns (previously linear layer)
         self.input_projection = nn.Conv1d(in_channels=1, out_channels=d_model, kernel_size=3, padding=1)
-        if task_type == 'classification' and num_classes==2:
-            self.fc = nn.Linear(d_model, 1)  #For selective ML TODO: Make selective parameter
+        if task_type == 'classification':
+            self.fc = nn.Linear(d_model, num_classes)  #For selective ML TODO: Make selective parameter
         else:  # regression
             self.fc = nn.Linear(d_model, 1)
         self.reservation_fc = nn.Linear(d_model, 1)
