@@ -37,7 +37,7 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
     model = model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    n_epochs = 10
+    n_epochs = 1000
     reward = initial_reward
     dynamic_threshold = 0.9  # Adjusted initial dynamic rejection threshold
     penalty_factor = 60.0  # Adjusted hyperparameter for coverage penalty
@@ -259,8 +259,13 @@ def main():
     selective=True
     if target=='cross_sectional_median':
         loss_func = 'bce'
+        num_classes=1
+    elif target=='buckets':
+        loss_func='ce'
+        num_classes=10
     else:
         loss_func = 'mse'
+        num_classes=0
     model_config={
         'd_model': 16,
         'num_heads': 4,
@@ -283,15 +288,15 @@ def main():
     
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
-                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target,num_classes=10)
+                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target,num_classes=num_classes)
     train_test_splits, task_types = create_tensors(study_periods)
 
 
     if selective==True:
-        model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
+        model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config,num_classes=num_classes)
         #Test method
     else:
-        model=train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
+        model=train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config,num_classes=num_classes)
         #Test method
     #export model config
     torch.save(model.state_dict(), 'model_state_dict.pth')

@@ -15,6 +15,7 @@ class ModelFactory:
         }
         self.losses = {
             'bce': nn.BCEWithLogitsLoss(),
+            'ce':nn.CrossEntropyLoss(),
             'mse': nn.MSELoss(),
             'sharpe': SharpeLoss(),
             'selective': SelectiveLoss(loss_func=nn.MSELoss(),coverage=.8),
