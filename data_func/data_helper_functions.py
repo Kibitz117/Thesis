@@ -74,11 +74,27 @@ def create_targets(train_df, trade_df, target):
         train_df['target'] = train_df['RET']
         trade_df['target'] = trade_df['RET']
 
-    elif target == 'buckets':
-        # Make 10 buckets of returns as targets
-        train_df['target'] = train_df.groupby('TICKER')['standardized_return'].transform(lambda x: pd.qcut(x, 10, labels=False, duplicates='drop')).astype(int)
-        trade_df['target'] = trade_df.groupby('TICKER')['standardized_return'].transform(lambda x: pd.qcut(x, 10, labels=False, duplicates='drop')).astype(int)
-        
+    if target == 'buckets':
+        # Handle NaN or infinite values in 'standardized_return'
+        for df in [train_df, trade_df]:
+            # Replace infinite values with NaN
+            df['standardized_return'].replace([np.inf, -np.inf], np.nan, inplace=True)
+            # Fill NaN values with a specific value, e.g., the median
+            df['standardized_return'].fillna(df['standardized_return'].median(), inplace=True)
+
+        # Bucketing for train_df
+        for ticker, group in train_df.groupby('TICKER'):
+            # Create buckets with qcut
+            buckets = pd.qcut(group['standardized_return'], 10, labels=False, duplicates='drop')
+            # Assign buckets to the train_df
+            train_df.loc[group.index, 'target'] = buckets
+
+        # Bucketing for trade_df
+        for ticker, group in trade_df.groupby('TICKER'):
+            # Create buckets with qcut
+            buckets = pd.qcut(group['standardized_return'], 10, labels=False, duplicates='drop')
+            # Assign buckets to the trade_df
+            trade_df.loc[group.index, 'target'] = buckets
     else:
         print('Invalid target type')
     return trade_df, train_df
@@ -87,6 +103,8 @@ def create_targets(train_df, trade_df, target):
 
 
 def process_window(in_sample_df, out_of_sample_df, sequence_length):
+    in_sample_df.dropna(subset=['target'], inplace=True)
+    out_of_sample_df.dropna(subset=['target'], inplace=True)
     in_sample_data = []
     in_sample_labels = []
 
