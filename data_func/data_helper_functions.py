@@ -76,8 +76,8 @@ def create_targets(train_df, trade_df, target):
 
     elif target == 'buckets':
         # Make 10 buckets of returns as targets
-        train_df['target'] = train_df.groupby('TICKER')['standardized_return'].transform(lambda x: pd.qcut(x, 10, labels=False, duplicates='drop'))
-        trade_df['target'] = trade_df.groupby('TICKER')['standardized_return'].transform(lambda x: pd.qcut(x, 10, labels=False, duplicates='drop'))
+        train_df['target'] = train_df.groupby('TICKER')['standardized_return'].transform(lambda x: pd.qcut(x, 10, labels=False, duplicates='drop')).astype(int)
+        trade_df['target'] = trade_df.groupby('TICKER')['standardized_return'].transform(lambda x: pd.qcut(x, 10, labels=False, duplicates='drop')).astype(int)
         
     else:
         print('Invalid target type')

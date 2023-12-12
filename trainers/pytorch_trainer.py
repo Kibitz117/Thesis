@@ -289,7 +289,7 @@ def main():
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
                                          start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target)
-    train_test_splits, task_types = create_tensors(study_periods,,num_classes=num_classes)
+    train_test_splits, task_types = create_tensors(study_periods)
 
 
     if selective==True:
