@@ -32,8 +32,11 @@ class ModelFactory:
             raise ValueError(f"Unknown loss: {loss_name}")
         if target_type not in self.task_types:
             raise ValueError(f"Unknown target type: {target_type}")
-        if selective==True:
-            model = self.models[model_name](**model_config, task_type=target_type,num_classes=3)
+        
+        if target_type=='cross_sectional_median':
+            model = self.models[model_name](**model_config, task_type=target_type,num_classes=1)
+        elif target_type=='buckets':
+            model = self.models[model_name](**model_config, task_type=target_type,num_classes=10)
         else:
             model = self.models[model_name](**model_config, task_type=target_type)
         loss = self.losses[loss_name]

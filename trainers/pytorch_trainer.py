@@ -255,7 +255,7 @@ def main():
     #Parameters
     model_name = 'transformer'
     #cross_sectional_median, raw_returns, buckets
-    target = 'buckets'
+    target = 'cross_sectional_median'
     selective=True
     if target=='cross_sectional_median':
         loss_func = 'bce'
@@ -289,14 +289,15 @@ def main():
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
                                          start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target)
+
     train_test_splits, task_types = create_tensors(study_periods)
 
 
     if selective==True:
-        model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config,num_classes=num_classes)
+        model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
         #Test method
     else:
-        model=train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config,num_classes=num_classes)
+        model=train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
         #Test method
     #export model config
     torch.save(model.state_dict(), 'model_state_dict.pth')

@@ -171,3 +171,5 @@ def create_tensors(study_periods, n_jobs=6, sequence_length=240):
     train_test_splits, task_types = zip(*[(result[:-1], result[-1]) for result in results])
     
     return train_test_splits, task_types
+
+# def wavelet_transform(study_periods):
