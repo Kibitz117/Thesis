@@ -31,9 +31,9 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=3, initial_reward=6.0, min_coverage=0.3):
+def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=3, initial_reward=6.0, min_coverage=0.3,num_classes=1):
     factory = ModelFactory()
-    model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
+    model, criterion = factory.create(model_name, task_type, loss_name, selective=True,num_classes=num_classes, model_config=model_config)
     model = model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -73,6 +73,8 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
                     # Pretraining phase without rejection option
                     probabilities = torch.sigmoid(main_output)
                     loss = criterion(probabilities, labels)
+
+                    print(f'Pretrain Epoch {epoch} loss {loss}')
                 else:
                     # Regular training with selective mechanism
                     probabilities = torch.sigmoid(main_output)
@@ -101,26 +103,26 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
                     accuracy_term = non_rejected_correct / accepted.sum()
                     accuracy_reward = accuracy_boost_factor * accuracy_term
                     loss = base_loss + coverage_penalty - accuracy_reward
+                    # Calculate and update best model state based on loss
+                    average_loss = total_train_loss / total_samples
+                    if average_loss < best_loss:
+                        best_loss = average_loss
+                        best_model_state = copy.deepcopy(model.state_dict())
+
+                # Print epoch metrics
+                average_coverage = total_coverage / total_samples
+                non_rejected_accuracy = total_non_rejected_correct / total_non_rejected_samples if total_non_rejected_samples > 0 else 0
+                print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_loss:.4f}, '
+                    f'Coverage: {average_coverage:.2f}, Non-Rejected Accuracy: {non_rejected_accuracy:.4f}')
+
+                # Adjust dynamic threshold and reward based on coverage
+                if average_coverage < min_coverage:
+                    dynamic_threshold *= 0.9  # Decrease threshold
+                    reward *= 0.9  # Decrease reward
 
                 loss.backward()
                 optimizer.step()
 
-            # Calculate and update best model state based on loss
-            average_loss = total_train_loss / total_samples
-            if average_loss < best_loss:
-                best_loss = average_loss
-                best_model_state = copy.deepcopy(model.state_dict())
-
-        # Print epoch metrics
-        average_coverage = total_coverage / total_samples
-        non_rejected_accuracy = total_non_rejected_correct / total_non_rejected_samples if total_non_rejected_samples > 0 else 0
-        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_loss:.4f}, '
-              f'Coverage: {average_coverage:.2f}, Non-Rejected Accuracy: {non_rejected_accuracy:.4f}')
-
-        # Adjust dynamic threshold and reward based on coverage
-        if average_coverage < min_coverage:
-            dynamic_threshold *= 0.9  # Decrease threshold
-            reward *= 0.9  # Decrease reward
 
     if best_model_state is not None:
         torch.save(best_model_state, model_save_path)
@@ -259,13 +261,10 @@ def main():
     selective=True
     if target=='cross_sectional_median':
         loss_func = 'bce'
-        num_classes=1
     elif target=='buckets':
         loss_func='ce'
-        num_classes=10
     else:
         loss_func = 'mse'
-        num_classes=0
     model_config={
         'd_model': 16,
         'num_heads': 4,
@@ -289,7 +288,6 @@ def main():
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
                                          start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target)
-
     train_test_splits, task_types = create_tensors(study_periods)
 
 
