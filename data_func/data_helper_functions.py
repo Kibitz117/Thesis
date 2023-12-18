@@ -6,11 +6,11 @@ from joblib import Parallel, delayed
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
-
+import pywt
 import pandas as pd
 from tqdm import tqdm
 
-def create_study_periods(df, n_periods, window_size, trade_size, train_size, forward_roll, start_date, end_date, target_type='cross_sectional_median', standardize=True, return_type='RET'):
+def create_study_periods(df, n_periods, window_size, trade_size, train_size, forward_roll, start_date, end_date, target_type='cross_sectional_median', standardize=True, return_type='RET', apply_wavelet_transform=False):
     """
     Create a list of study periods, each consisting of a training period and a trading period.
     ...
@@ -29,7 +29,10 @@ def create_study_periods(df, n_periods, window_size, trade_size, train_size, for
         # Create separate DataFrames for training and trading periods
         train_df = df[(df['date'] >= train_start) & (df['date'] < train_end)].copy()
         trade_df = df[(df['date'] >= train_end) & (df['date'] < trade_end)].copy()
-        
+        if apply_wavelet_transform:
+            # Apply wavelet transform to the 'RET' column of both training and trading DataFrames
+            train_df[return_type] = wavelet_transform(train_df[return_type])
+            trade_df[return_type] = wavelet_transform(trade_df[return_type])
         if train_df.empty or trade_df.empty:
             print(f"No data available for the period {train_start.date()} to {trade_end.date()}. Skipping.")
             continue
@@ -74,7 +77,7 @@ def create_targets(train_df, trade_df, target):
         train_df['target'] = train_df['RET']
         trade_df['target'] = trade_df['RET']
 
-    if target == 'buckets':
+    elif target == 'buckets':
         # Handle NaN or infinite values in 'standardized_return'
         for df in [train_df, trade_df]:
             # Replace infinite values with NaN
@@ -172,4 +175,37 @@ def create_tensors(study_periods, n_jobs=6, sequence_length=240):
     
     return train_test_splits, task_types
 
-# def wavelet_transform(study_periods):
+def wavelet_transform(signal, wavelet='db1', mode='soft', level=None):
+    """
+    Apply wavelet transform to denoise time series data.
+
+    Args:
+    signal (array-like): The time series data.
+    wavelet (str): Type of wavelet to use.
+    mode (str): Thresholding mode - 'soft' or 'hard'.
+    level (int): Level of decomposition. If None, max level is used.
+
+    Returns:
+    array: Denoised signal.
+    """
+    # Determine the maximum level of decomposition
+    if level is None:
+        level = pywt.dwt_max_level(len(signal), pywt.Wavelet(wavelet).dec_len)
+
+    # Perform Discrete Wavelet Transform
+    coeffs = pywt.wavedec(signal, wavelet, level=level)
+
+    # Thresholding
+    threshold = np.sqrt(2*np.log(len(signal))) * np.median(np.abs(coeffs[-1])) / 0.6745
+    denoised_coeffs = [pywt.threshold(c, value=threshold, mode=mode) for c in coeffs]
+
+    # Reconstruct the denoised signal
+    denoised_signal = pywt.waverec(denoised_coeffs, wavelet)
+
+    # Handle mismatch in lengths due to reconstruction
+    if len(denoised_signal) != len(signal):
+        denoised_signal = denoised_signal[:len(signal)]
+
+    return denoised_signal
+
+

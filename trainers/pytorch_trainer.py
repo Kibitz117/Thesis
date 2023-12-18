@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 import sys
 import math
+import copy
 from datetime import datetime
 sys.path.append('utils')
 sys.path.append('models')
@@ -31,9 +32,9 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=3, initial_reward=6.0, min_coverage=0.3,num_classes=1):
+def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=10, initial_reward=6.0, min_coverage=0.3):
     factory = ModelFactory()
-    model, criterion = factory.create(model_name, task_type, loss_name, selective=True,num_classes=num_classes, model_config=model_config)
+    model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
     model = model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -46,19 +47,20 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
     best_loss = float('inf')
     best_model_state = None
 
-    if device == 'cuda':
+    if device == 'cuda' or device=='mps':
         num_workers = 4
-        batch_size = 128
+        batch_size = 64
     else:
         num_workers = 1
         batch_size = 16
 
     for epoch in range(n_epochs):
         model.train()
-        total_train_loss, total_coverage, total_samples = 0.0, 0.0, 0
-        total_non_rejected_correct, total_non_rejected_samples = 0, 0
+        total_train_loss, total_samples = 0.0, 0
+        # Initialize coverage and rejection-related variables
+        total_coverage, total_non_rejected_correct, total_non_rejected_samples = 0.0, 0, 0
 
-        for train_data, train_labels ,_, _ in tqdm(train_test_splits):
+        for train_data, train_labels, _, _ in tqdm(train_test_splits):
             train_dataset = TensorDataset(train_data, train_labels)
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
@@ -71,10 +73,7 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
                 if epoch < pretrain_epochs:
                     # Pretraining phase without rejection option
-                    probabilities = torch.sigmoid(main_output)
-                    loss = criterion(probabilities, labels)
-
-                    print(f'Pretrain Epoch {epoch} loss {loss}')
+                    loss = criterion(main_output, labels)
                 else:
                     # Regular training with selective mechanism
                     probabilities = torch.sigmoid(main_output)
@@ -91,44 +90,44 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
                     non_rejected_correct = (correct_predictions * accepted).sum()
 
                     # Update totals
-                    train_loss = base_loss.item() * data.size(0)
-                    total_train_loss += train_loss
                     total_coverage += coverage.item() * data.size(0)
-                    total_samples += data.size(0)
                     total_non_rejected_correct += non_rejected_correct.item()
                     total_non_rejected_samples += accepted.sum().item()
+                    train_loss = base_loss.item() * data.size(0)
 
                     # Penalty and rewards
                     coverage_penalty = max(0, min_coverage - coverage) * penalty_factor
-                    accuracy_term = non_rejected_correct / accepted.sum()
+                    accuracy_term = non_rejected_correct / (accepted.sum() + 1e-8)  # Avoid division by zero
                     accuracy_reward = accuracy_boost_factor * accuracy_term
                     loss = base_loss + coverage_penalty - accuracy_reward
-                    # Calculate and update best model state based on loss
-                    average_loss = total_train_loss / total_samples
-                    if average_loss < best_loss:
-                        best_loss = average_loss
-                        best_model_state = copy.deepcopy(model.state_dict())
-
-                # Print epoch metrics
-                average_coverage = total_coverage / total_samples
-                non_rejected_accuracy = total_non_rejected_correct / total_non_rejected_samples if total_non_rejected_samples > 0 else 0
-                print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_loss:.4f}, '
-                    f'Coverage: {average_coverage:.2f}, Non-Rejected Accuracy: {non_rejected_accuracy:.4f}')
-
-                # Adjust dynamic threshold and reward based on coverage
-                if average_coverage < min_coverage:
-                    dynamic_threshold *= 0.9  # Decrease threshold
-                    reward *= 0.9  # Decrease reward
 
                 loss.backward()
                 optimizer.step()
+                total_train_loss += loss.item() * data.size(0)
+                total_samples += data.size(0)
 
+        # Update best model state and print metrics outside the inner loop
+        average_loss = total_train_loss / total_samples
+        if average_loss < best_loss:
+            best_loss = average_loss
+            best_model_state = copy.deepcopy(model.state_dict())
+
+        average_coverage = total_coverage / total_samples if epoch >= pretrain_epochs else 0
+        non_rejected_accuracy = total_non_rejected_correct / total_non_rejected_samples if total_non_rejected_samples > 0 else 0
+        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_loss:.4f}, '
+              f'Coverage: {average_coverage:.2f}, Non-Rejected Accuracy: {non_rejected_accuracy:.4f}')
+
+        # Adjust dynamic threshold and reward based on coverage outside the inner loop
+        if epoch >= pretrain_epochs and average_coverage < min_coverage:
+            dynamic_threshold *= 0.9  # Decrease threshold
+            reward *= 0.9  # Decrease reward
 
     if best_model_state is not None:
         torch.save(best_model_state, model_save_path)
         model.load_state_dict(best_model_state)
 
     return model
+
 
 
 
@@ -146,7 +145,7 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
     best_loss = np.inf
     counter = 0
     #USE RSYNC TO MOVE FILES TO VM
-    if device == 'cuda':
+    if device == 'cuda' or device=='mps':
         num_workers = 4
         batch_size = 128
     else:
@@ -258,7 +257,7 @@ def main():
     model_name = 'transformer'
     #cross_sectional_median, raw_returns, buckets
     target = 'cross_sectional_median'
-    selective=True
+    selective=False
     if target=='cross_sectional_median':
         loss_func = 'bce'
     elif target=='buckets':
@@ -274,7 +273,15 @@ def main():
 
     }
      # Check if CUDA, MPS, or CPU should be used
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    # Check for MPS (Apple Silicon)
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    # Fallback to CPU
+    else:
+        device = torch.device("cpu")
+
     print("Using device:", device)
 
     # Load data
@@ -283,12 +290,12 @@ def main():
     df.dropna(subset=['RET'], inplace=True)
     df = df.drop(columns='Unnamed: 0')
     #subset df to 2014-2015
-    df = df[df['date'] >= datetime(2014, 1, 1)]
+    df = df[df['date'] >= datetime(2010, 1, 1)]
     
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
                                          start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target)
-    train_test_splits, task_types = create_tensors(study_periods)
+    train_test_splits, task_types = create_tensors(study_periods,n_jobs=10)
 
 
     if selective==True:
