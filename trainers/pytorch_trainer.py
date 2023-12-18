@@ -47,7 +47,7 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
     best_loss = float('inf')
     best_model_state = None
 
-    if device == 'cuda' or device=='mps':
+    if device.type == 'cuda' or device.type=='mps':
         num_workers = 4
         batch_size = 64
     else:
@@ -139,15 +139,15 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
     model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config)
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0005)
     n_epochs = 1000
     patience = 5
-    best_loss = np.inf
+    best_val_loss = np.inf
     counter = 0
-    #USE RSYNC TO MOVE FILES TO VM
-    if device == 'cuda' or device=='mps':
+
+    if device.type == 'cuda' or device.type=='mps':
         num_workers = 4
-        batch_size = 128
+        batch_size = 64
     else:
         num_workers = 1
         batch_size = 16
@@ -158,9 +158,9 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
         total_correct = 0
         total_samples = 0
 
-        for train_data, train_labels, _, _ in tqdm(train_test_splits):
+        for train_data, train_labels, val_data, val_labels in tqdm(train_test_splits):
             train_dataset = TensorDataset(train_data, train_labels)
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
             train_loss = 0.0
             for data, labels in train_loader:
@@ -169,15 +169,13 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
 
                 optimizer.zero_grad()
                 outputs, _ = model(data)
-                # outputs = outputs.squeeze()
                 loss = criterion(outputs, labels) 
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item() * data.size(0)
 
-                # Calculate accuracy
                 preds = torch.sigmoid(outputs) >= 0.5
-                preds = preds.view(-1,1).float()  # Reshape and convert to float for comparison
+                preds = preds.view(-1,1).float()
                 total_correct += (preds == labels).sum().item()
                 total_samples += labels.size(0)
 
@@ -186,18 +184,38 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
         average_train_loss = total_train_loss / len(train_test_splits)
         train_accuracy = total_correct / total_samples
 
-        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}')
+        # Validation Step
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        with torch.no_grad():
+            for data, labels in DataLoader(TensorDataset(val_data, val_labels), batch_size=batch_size, shuffle=False, num_workers=num_workers):
+                data, labels = data.to(device), labels.to(device)
+                labels = labels.view(-1, 1).float()
 
-        if average_train_loss < best_loss:
-            best_loss = average_train_loss
+                outputs, _ = model(data)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item() * data.size(0)
+
+                preds = torch.sigmoid(outputs) >= 0.5
+                preds = preds.view(-1,1).float()
+                val_correct += (preds == labels).sum().item()
+
+            average_val_loss = val_loss / len(val_data)
+            val_accuracy = val_correct / len(val_data)
+
+        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, Average Val Loss: {average_val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}')
+
+        # Early Stopping Check
+        if average_val_loss < best_val_loss:
+            best_val_loss = average_val_loss
             torch.save(model.state_dict(), model_save_path)
             counter = 0
         else:
             counter += 1
-
-        if counter == patience:
-            print('Early stopping!')
-            break
+            if counter == patience:
+                print('Early stopping!')
+                break
 
     best_model_state = torch.load(model_save_path, map_location=device)
     model.load_state_dict(best_model_state)
@@ -265,10 +283,10 @@ def main():
     else:
         loss_func = 'mse'
     model_config={
-        'd_model': 16,
+        'd_model': 32,
         'num_heads': 4,
-        'd_ff': 32,
-        'num_encoder_layers': 1,
+        'd_ff': 256,
+        'num_encoder_layers': 3,
         'dropout': .1,
 
     }
@@ -285,16 +303,16 @@ def main():
     print("Using device:", device)
 
     # Load data
-    df = pd.read_csv('data/crsp_ff_adjusted.csv')
+    df = pd.read_csv('data/corrected_crsp_ff_adjusted.csv')
     df['date'] = pd.to_datetime(df['date'])
     df.dropna(subset=['RET'], inplace=True)
     df = df.drop(columns='Unnamed: 0')
     #subset df to 2014-2015
-    df = df[df['date'] >= datetime(2010, 1, 1)]
+    df = df[df['date'] >= datetime(2012, 1, 1)]
     
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
-                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target)
+                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target,apply_wavelet_transform=False)
     train_test_splits, task_types = create_tensors(study_periods,n_jobs=10)
 
 
