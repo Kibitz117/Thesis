@@ -29,14 +29,7 @@ class ScaledMultiHeadAttention(nn.Module):
 
         self.relative_positional_encoding = RelativePositionalEncoding(self.d_model)
         self.reset_parameters()
-    @staticmethod
-    def create_look_ahead_mask(batch_size, sequence_length):
-        mask = torch.triu(torch.ones((sequence_length, sequence_length)), diagonal=0)
-        mask = mask.unsqueeze(0).unsqueeze(1)  # Add a dimension for num_heads
-        mask = mask.expand(batch_size, -1, -1, -1)  # The -1 keeps the existing dimensions
-        return mask  # mask shape is now [batch_size, 1, seq_length, seq_length]
-
-
+   
 
     def forward(self, query, key, value, mask=None):
         batch_size = query.size(0)
@@ -53,12 +46,17 @@ class ScaledMultiHeadAttention(nn.Module):
         relative_position_scores = self.compute_relative_position_scores(Q, relative_pos_embeddings)
         scores += relative_position_scores
 
+        # Apply a large negative number for masked positions instead of -inf
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-        
+            mask = mask.expand(batch_size, -1, -1, -1)
+            scores = scores.masked_fill(mask == 0, -1e9)  # Using a large negative number because numerical instability with -inf
+
         # Apply softmax to get the attention weights
         attention_weights = F.softmax(scores + 1e-9, dim=-1)
 
+        # Apply mask after softmax (if required) sets straggling small values to 0 to avoid numerical instability
+        if mask is not None:
+            attention_weights = attention_weights.masked_fill(mask == 0, 0)
 
         # Apply attention to the value vector
         output = torch.matmul(attention_weights, V)
@@ -185,7 +183,7 @@ class RelativePositionalEncoding(nn.Module):
 
 
 class TimeSeriesTransformer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, dropout=0.1, task_type='regression', num_classes=1):
+    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, dropout=0.1, task_type='regression', num_classes=1,device='mps'):
         super(TimeSeriesTransformer, self).__init__()
         
         self.d_model = d_model
@@ -201,6 +199,7 @@ class TimeSeriesTransformer(nn.Module):
 
     def forward(self, src, src_mask=None):
         # Ensure src is a float tensor
+
         src = src.float()
 
         # Reshape src to match Conv1d input shape: (batch_size, channels, length)
@@ -232,6 +231,12 @@ class TimeSeriesTransformer(nn.Module):
 
         # Return both outputs
         return main_output, reservation_output
+    @staticmethod
+    def create_lookahead_mask(size):
+        # Mask shape: [1, seq_length, seq_length]
+        mask = torch.triu(torch.ones(1, size, size), diagonal=1).bool()
+        return mask
+
 
 
 

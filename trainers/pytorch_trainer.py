@@ -139,7 +139,7 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
     model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config)
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.0005)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
     n_epochs = 1000
     patience = 5
     best_val_loss = np.inf
@@ -312,7 +312,7 @@ def main():
     
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
-                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target,apply_wavelet_transform=False)
+                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target,apply_wavelet_transform=True)
     train_test_splits, task_types = create_tensors(study_periods,n_jobs=10)
 
 
