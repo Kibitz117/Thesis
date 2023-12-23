@@ -37,6 +37,9 @@ class ScaledMultiHeadAttention(nn.Module):
         Q = self.fc_q(query).view(batch_size, seq_length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         K = self.fc_k(key).view(batch_size, seq_length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         V = self.fc_v(value).view(batch_size, seq_length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        # Q = self.fc_q(query)
+        # K = self.fc_k(key)
+        # V = self.fc_v(value)
 
         # Calculate attention scores with scaling for stability
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
@@ -119,16 +122,22 @@ class EncoderLayer(nn.Module):
         self.layer_norm2 = nn.LayerNorm(d_model)
 
     def forward(self, x, mask):
-
-
-        # Self attention
+    # Self attention
         attention = self.self_attention(x, x, x, mask)
+        
         # Add and norm
-        x = self.layer_norm1(x + self.dropout(attention))
+        x = x + self.dropout(attention)
+        x = self.layer_norm1(x)
+        #Debug statement
+        # x.register_hook(lambda grad: print("Gradient norm after LayerNorm1:", torch.norm(grad).item()))
+
         # Position wise feed forward
         feed_forward = self.position_wise_feed_forward(x)
+
         # Add and norm
-        x = self.layer_norm2(x + self.dropout(feed_forward))
+        x = x + self.dropout(feed_forward)
+        x = self.layer_norm2(x)
+        x.register_hook(lambda grad: print("Gradient norm after LayerNorm2:", torch.norm(grad).item()))
 
         return x
 
@@ -183,57 +192,57 @@ class RelativePositionalEncoding(nn.Module):
 
 
 class TimeSeriesTransformer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, dropout=0.1, task_type='regression', num_classes=1,device='mps'):
+    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, input_features=1, dropout=0.3, task_type='regression', num_classes=1):
         super(TimeSeriesTransformer, self).__init__()
-        
+
         self.d_model = d_model
         self.task_type = task_type
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
-        #Changes input projection to 1d convolution to capture short term patterns (previously linear layer)
+
+        # Input projection layer
         self.input_projection = nn.Conv1d(in_channels=1, out_channels=d_model, kernel_size=3, padding=1)
+        
+        # Encoder layers
+        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
+        
+        # Output layer
         if task_type == 'classification':
-            self.fc = nn.Linear(d_model, num_classes)  #For selective ML TODO: Make selective parameter
+            self.fc = nn.Linear(d_model, num_classes)
         else:  # regression
             self.fc = nn.Linear(d_model, 1)
+
         self.reservation_fc = nn.Linear(d_model, 1)
 
     def forward(self, src, src_mask=None):
         # Ensure src is a float tensor
-
         src = src.float()
 
-        # Reshape src to match Conv1d input shape: (batch_size, channels, length)
-        src = src.permute(0, 2, 1)  # Now src shape is [batch_size, 1, sequence_length]
+        # Flatten the sequence and feature dimensions for the linear layer
+        src = src.permute(0, 2, 1)  # Flattening to [batch_size, sequence_length, features]
 
-        # Project input to d_model size using Conv1d
-        src = self.input_projection(src)  # [batch_size, d_model, sequence_length]
+        # Project input to d_model size using Linear
+        src = self.input_projection(src) 
+        
+        src = src.permute(0, 2, 1)  # Now src should have the shape [batch_size, sequence_length, d_model]
 
-        # Reshape src back to original sequence ordering: (batch_size, length, channels)
-        src = src.permute(0, 2, 1)  # Now src shape is [batch_size, sequence_length, d_model]
-
-        # Scale input embeddings (removed positional encoding addition)
-        src = src * math.sqrt(self.d_model)
+        # Scale input embeddings
+        src *= math.sqrt(self.d_model)
 
         # Pass through each layer of the encoder
-        for layer_idx, layer in enumerate(self.encoder_layers):
+        for layer in self.encoder_layers:
             src = layer(src, src_mask)
 
-        # Capture the context from the last time step of the encoded sequence
+        # Context from the last time step
         context = src[:, -1, :]
         
-        # Final linear layer for main output
+        # Final linear layers
         main_output = self.fc(context)
-
-        # Reservation score output
         reservation_output = self.reservation_fc(context)
-        #Sigmoid the reservation score so we get confidence probability
-        reservation_output=F.sigmoid(reservation_output)
+        reservation_output = torch.sigmoid(reservation_output)
 
-        # Return both outputs
         return main_output, reservation_output
+
     @staticmethod
     def create_lookahead_mask(size):
-        # Mask shape: [1, seq_length, seq_length]
         mask = torch.triu(torch.ones(1, size, size), diagonal=1).bool()
         return mask
 

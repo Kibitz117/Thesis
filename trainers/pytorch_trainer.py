@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
 import sys
 import math
 import copy
@@ -24,20 +23,17 @@ from tqdm import tqdm
 import torch
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
-from tqdm import tqdm
 import numpy as np
 import torch.nn.functional as F
 
-import torch
-from torch.utils.data import TensorDataset, DataLoader
-from tqdm import tqdm
+
 
 def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=10, initial_reward=6.0, min_coverage=0.3):
     factory = ModelFactory()
     model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
     n_epochs = 1000
     reward = initial_reward
     dynamic_threshold = 0.9  # Adjusted initial dynamic rejection threshold
@@ -139,11 +135,12 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
     model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config)
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001,weight_decay=0.0002)
     n_epochs = 1000
     patience = 5
     best_val_loss = np.inf
     counter = 0
+    max_norm=.7
 
     if device.type == 'cuda' or device.type=='mps':
         num_workers = 4
@@ -157,20 +154,24 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
         total_train_loss = 0.0
         total_correct = 0
         total_samples = 0
-
+        i=1
         for train_data, train_labels, val_data, val_labels in tqdm(train_test_splits):
+            # print(f'Period {i}') #Debug second iteration of period 2
+            # i+=1
             train_dataset = TensorDataset(train_data, train_labels)
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
             train_loss = 0.0
-            for data, labels in train_loader:
+            for data, labels in (train_loader):
                 data, labels = data.to(device), labels.to(device)
                 labels = labels.view(-1, 1).float()
 
                 optimizer.zero_grad()
-                outputs, _ = model(data)
+                mask=model.create_lookahead_mask(data.size(1)).to(device)#Mask of size sequence length
+                outputs, _ = model(data,src_mask=mask)
                 loss = criterion(outputs, labels) 
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
                 optimizer.step()
                 train_loss += loss.item() * data.size(0)
 
@@ -193,6 +194,7 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
                 data, labels = data.to(device), labels.to(device)
                 labels = labels.view(-1, 1).float()
 
+                # mask=TimeSeriesTransformer.create_lookahead_mask(data.size(1))#Mask of size sequence length
                 outputs, _ = model(data)
                 loss = criterion(outputs, labels)
                 val_loss += loss.item() * data.size(0)
@@ -283,10 +285,10 @@ def main():
     else:
         loss_func = 'mse'
     model_config={
-        'd_model': 32,
-        'num_heads': 4,
+        'd_model': 64,
+        'num_heads': 16,
         'd_ff': 256,
-        'num_encoder_layers': 3,
+        'num_encoder_layers': 1,
         'dropout': .1,
 
     }
@@ -308,11 +310,12 @@ def main():
     df.dropna(subset=['RET'], inplace=True)
     df = df.drop(columns='Unnamed: 0')
     #subset df to 2014-2015
-    df = df[df['date'] >= datetime(2012, 1, 1)]
+    df = df[df['date'] >= datetime(2000, 1, 1)]
+    # df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','FB'])]
     
     # Create tensors
     study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
-                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target,apply_wavelet_transform=True)
+                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target,apply_wavelet_transform=False)
     train_test_splits, task_types = create_tensors(study_periods,n_jobs=10)
 
 
