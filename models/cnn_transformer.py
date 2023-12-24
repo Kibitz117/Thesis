@@ -1,4 +1,7 @@
 from transformer_model import EncoderLayer
+import torch
+import torch.nn as nn
+import math
 class ConvolutionalFeatureExtractor(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, dropout=0.1):
         super(ConvolutionalFeatureExtractor, self).__init__()
@@ -51,5 +54,9 @@ class TimeSeriesTransformerWithCNN(nn.Module):
         
         # Final linear layer for output
         output = self.fc(context)
-
-        return output
+        #TODO:Edit later to support selective ML
+        return output,0
+    @staticmethod
+    def create_lookahead_mask(size):
+        mask = torch.triu(torch.ones(1, size, size), diagonal=1).bool()
+        return mask

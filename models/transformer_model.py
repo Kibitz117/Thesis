@@ -137,7 +137,7 @@ class EncoderLayer(nn.Module):
         # Add and norm
         x = x + self.dropout(feed_forward)
         x = self.layer_norm2(x)
-        x.register_hook(lambda grad: print("Gradient norm after LayerNorm2:", torch.norm(grad).item()))
+        # x.register_hook(lambda grad: print("Gradient norm after LayerNorm2:", torch.norm(grad).item()))
 
         return x
 
@@ -198,8 +198,8 @@ class TimeSeriesTransformer(nn.Module):
         self.d_model = d_model
         self.task_type = task_type
 
-        # Input projection layer
-        self.input_projection = nn.Conv1d(in_channels=1, out_channels=d_model, kernel_size=3, padding=1)
+        # Adjusted input projection layer for multiple input features
+        self.input_projection = nn.Conv1d(in_channels=input_features, out_channels=d_model, kernel_size=3, padding=1)
         
         # Encoder layers
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
@@ -211,6 +211,7 @@ class TimeSeriesTransformer(nn.Module):
             self.fc = nn.Linear(d_model, 1)
 
         self.reservation_fc = nn.Linear(d_model, 1)
+
 
     def forward(self, src, src_mask=None):
         # Ensure src is a float tensor

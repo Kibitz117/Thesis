@@ -135,15 +135,15 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
     model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config)
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.0001,weight_decay=0.0002)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001,weight_decay=0.0001)
     n_epochs = 1000
     patience = 5
     best_val_loss = np.inf
     counter = 0
-    max_norm=.7
+    max_norm=1
 
     if device.type == 'cuda' or device.type=='mps':
-        num_workers = 4
+        num_workers = 8
         batch_size = 64
     else:
         num_workers = 1
@@ -168,7 +168,7 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
 
                 optimizer.zero_grad()
                 mask=model.create_lookahead_mask(data.size(1)).to(device)#Mask of size sequence length
-                outputs, _ = model(data,src_mask=mask)
+                outputs,_ = model(data,src_mask=mask)
                 loss = criterion(outputs, labels) 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
@@ -271,14 +271,33 @@ def selective_test(model_name, task_type, loss_name, test_loader, device, model_
 
     return all_labels, all_predictions, all_reservations
 
+def load_data(path,data_type,start=None):
+    df = pd.read_csv(path)
+    df['date'] = pd.to_datetime(df['date'])
+    columns_to_keep = [data_type, 'TICKER','date']
+    # List of columns to drop
+    columns_to_drop = df.columns.difference(columns_to_keep)
+
+    df = df.drop(columns=columns_to_drop)
+
+    df=df.dropna(subset=[data_type])
+    if start is not None:
+        start_date=start
+    else:
+        start_date=df['date'].min()
+    end_date=df['date'].max()
+
+    return df,start_date,end_date
 
 def main():
     #Parameters
-    model_name = 'transformer'
+    model_name = 'cnn_transformer'
     #cross_sectional_median, raw_returns, buckets
     target = 'cross_sectional_median'
+    data_type='RET'
     selective=False
-    if target=='cross_sectional_median':
+    sequence_length=240
+    if target=='cross_sectional_median' or target=='direction':
         loss_func = 'bce'
     elif target=='buckets':
         loss_func='ce'
@@ -286,9 +305,9 @@ def main():
         loss_func = 'mse'
     model_config={
         'd_model': 64,
-        'num_heads': 16,
+        'num_heads': 8,
         'd_ff': 256,
-        'num_encoder_layers': 1,
+        'num_encoder_layers': 2,
         'dropout': .1,
 
     }
@@ -304,20 +323,57 @@ def main():
 
     print("Using device:", device)
 
+    #Create code that intelligently drops unused columns aside from date and ticker, and any classes. num_classes is 1 by default, but ends up being whatever it is after wavelet transform or adding interest rate
     # Load data
-    df = pd.read_csv('data/corrected_crsp_ff_adjusted.csv')
-    df['date'] = pd.to_datetime(df['date'])
-    df.dropna(subset=['RET'], inplace=True)
-    df = df.drop(columns='Unnamed: 0')
-    #subset df to 2014-2015
-    df = df[df['date'] >= datetime(2000, 1, 1)]
-    # df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','FB'])]
+    # df = pd.read_csv('data/crsp_ff_adjusted.csv')
+    # df['date'] = pd.to_datetime(df['date'])
+    # df.dropna(subset=['RET'], inplace=True)
+    # df = df.drop(columns='Unnamed: 0')
+    # #subset df to 2014-2015
+    # df = df[df['date'] >= datetime(2013, 1, 1)]
+    # # df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','FB'])]
+    # start_date=df['date'].min()
+    # end_date=df['date'].max()
+    # # df=pd.read_csv('data/vectorbt_data.csv')
+    # # df['date'] = pd.to_datetime(df['date'])
+    # # df.dropna(subset=['PRICE'],inplace=True)
+    # # df = df.drop(columns='Unnamed: 0')
     
-    # Create tensors
-    study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
-                                         start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target,apply_wavelet_transform=False)
-    train_test_splits, task_types = create_tensors(study_periods,n_jobs=10)
 
+    # # Create tensors
+    # study_periods = create_study_periods(df, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
+    #                                      start_date=start_date, end_date=end_date, target_type=target,data_type=data_type,apply_wavelet_transform=False)
+    # train_test_splits, task_types = create_tensors(study_periods,n_jobs=10)
+
+ #WAVELETS
+    # df = pd.read_csv('data/crsp_ff_adjusted.csv')
+    # df['date'] = pd.to_datetime(df['date'])
+    # df.dropna(subset=['RET'], inplace=True)
+    # df = df.drop(columns='Unnamed: 0')
+    # #subset df to 2014-2015
+    # df = df[df['date'] >= datetime(2013, 1, 1)]
+    # # df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','FB'])]
+    # start_date=df['date'].min()
+    # end_date=df['date'].max()
+
+    path='data/crsp_ff_adjusted.csv'
+    # path='data/corrected_crsp_ff_adjusted.csv'
+    start=datetime(2012,1,1)
+    df,start_date,end_date=load_data(path,'RET',start)
+    # df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','IBM'])]
+
+    study_periods = create_study_periods(df, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
+                                         start_date=start_date, end_date=end_date, target_type=target,data_type=data_type,apply_wavelet_transform=False)
+    columns=study_periods[0][0].columns.to_list()
+    feature_columns = [col for col in columns if col not in ['date', 'TICKER', 'target']]
+    model_config['input_features']=len(feature_columns)
+    if len(study_periods)>10:
+        n_jobs=10
+    else:
+        n_jobs=len(study_periods)
+    train_test_splits, task_types = create_tensors(study_periods,n_jobs,sequence_length,feature_columns)
+
+    
 
     if selective==True:
         model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
@@ -328,13 +384,6 @@ def main():
     #export model config
     torch.save(model.state_dict(), 'model_state_dict.pth')
 
-    # in_sample_long_portfolios, in_sample_short_portfolios, out_of_sample_long_portfolios, out_of_sample_short_portfolios = evaluate_model(model, train_test_splits, k=10, device=device)
-
-    # Export portfolios
-    # in_sample_long_portfolios.to_csv(f'../data/{model_name}_results/in_sample_long_portfolios.csv')
-    # in_sample_short_portfolios.to_csv(f'../data/{model_name}_results/in_sample_short_portfolios.csv')
-    # out_of_sample_long_portfolios.to_csv(f'../data/{model_name}_results/out_of_sample_long_portfolios.csv')
-    # out_of_sample_short_portfolios.to_csv(f'../data/{model_name}_results/out_of_sample_short_portfolios.csv')
 
 if __name__ == "__main__":
     main()

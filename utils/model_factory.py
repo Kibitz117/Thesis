@@ -4,6 +4,7 @@ import sys
 sys.path.append('models')
 sys.path.append('utils')
 from transformer_model import TimeSeriesTransformer
+from cnn_transformer import TimeSeriesTransformerWithCNN
 from selective_loss import SelectiveLoss
 from sharpe_loss import SharpeLoss
 
@@ -11,6 +12,7 @@ class ModelFactory:
     def __init__(self):
         self.models = {
             'transformer': TimeSeriesTransformer,
+            'cnn_transformer':TimeSeriesTransformerWithCNN
             # Add other models here
         }
         self.losses = {
