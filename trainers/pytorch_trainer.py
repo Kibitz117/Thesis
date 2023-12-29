@@ -135,7 +135,7 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
     model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config)
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.0001,weight_decay=0.0001)
+    optimizer = optim.Adam(model.parameters(), lr=0.001,weight_decay=0.0001)
     n_epochs = 1000
     patience = 5
     best_val_loss = np.inf
@@ -274,13 +274,13 @@ def selective_test(model_name, task_type, loss_name, test_loader, device, model_
 def load_data(path,data_type,start=None):
     df = pd.read_csv(path)
     df['date'] = pd.to_datetime(df['date'])
-    columns_to_keep = [data_type, 'TICKER','date']
+    columns_to_keep =data_type + ['TICKER','date']
     # List of columns to drop
     columns_to_drop = df.columns.difference(columns_to_keep)
 
     df = df.drop(columns=columns_to_drop)
 
-    df=df.dropna(subset=[data_type])
+    df=df.dropna(subset=data_type)
     if start is not None:
         start_date=start
     else:
@@ -291,10 +291,11 @@ def load_data(path,data_type,start=None):
 
 def main():
     #Parameters
-    model_name = 'cnn_transformer'
+    model_name = 'transformer'
     #cross_sectional_median, raw_returns, buckets
     target = 'cross_sectional_median'
     data_type='RET'
+    features=['RET','FEDFUNDS']
     selective=False
     sequence_length=240
     if target=='cross_sectional_median' or target=='direction':
@@ -323,27 +324,6 @@ def main():
 
     print("Using device:", device)
 
-    #Create code that intelligently drops unused columns aside from date and ticker, and any classes. num_classes is 1 by default, but ends up being whatever it is after wavelet transform or adding interest rate
-    # Load data
-    # df = pd.read_csv('data/crsp_ff_adjusted.csv')
-    # df['date'] = pd.to_datetime(df['date'])
-    # df.dropna(subset=['RET'], inplace=True)
-    # df = df.drop(columns='Unnamed: 0')
-    # #subset df to 2014-2015
-    # df = df[df['date'] >= datetime(2013, 1, 1)]
-    # # df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','FB'])]
-    # start_date=df['date'].min()
-    # end_date=df['date'].max()
-    # # df=pd.read_csv('data/vectorbt_data.csv')
-    # # df['date'] = pd.to_datetime(df['date'])
-    # # df.dropna(subset=['PRICE'],inplace=True)
-    # # df = df.drop(columns='Unnamed: 0')
-    
-
-    # # Create tensors
-    # study_periods = create_study_periods(df, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
-    #                                      start_date=start_date, end_date=end_date, target_type=target,data_type=data_type,apply_wavelet_transform=False)
-    # train_test_splits, task_types = create_tensors(study_periods,n_jobs=10)
 
  #WAVELETS
     # df = pd.read_csv('data/crsp_ff_adjusted.csv')
@@ -356,10 +336,12 @@ def main():
     # start_date=df['date'].min()
     # end_date=df['date'].max()
 
-    path='data/crsp_ff_adjusted.csv'
+    # path='data/crsp_ff_adjusted.csv'
+    path='data/merged_data.csv'
+    # path='data/spy_universe.csv'
     # path='data/corrected_crsp_ff_adjusted.csv'
     start=datetime(2012,1,1)
-    df,start_date,end_date=load_data(path,'RET',start)
+    df,start_date,end_date=load_data(path,features,start)
     # df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','IBM'])]
 
     study_periods = create_study_periods(df, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
