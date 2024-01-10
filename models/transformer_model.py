@@ -206,7 +206,7 @@ class TimeSeriesTransformer(nn.Module):
         
         # Output layer
         if task_type == 'classification':
-            self.fc = nn.Linear(d_model, num_classes)
+            self.fc = nn.Linear(d_model, 1)
         else:  # regression
             self.fc = nn.Linear(d_model, 1)
 
@@ -237,8 +237,7 @@ class TimeSeriesTransformer(nn.Module):
         
         # Final linear layers
         main_output = self.fc(context)
-        reservation_output = self.reservation_fc(context)
-        reservation_output = torch.sigmoid(reservation_output)
+        reservation_output = torch.sigmoid(self.reservation_fc(context))
 
         return main_output, reservation_output
 

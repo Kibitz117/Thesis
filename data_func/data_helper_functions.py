@@ -35,7 +35,7 @@ def create_study_periods(df, window_size, trade_size, train_size, forward_roll, 
         trade_df[data_type] = pd.to_numeric(trade_df[data_type], errors='coerce')
 
         if standardize:
-            train_df, trade_df = standardize_data(train_df, trade_df, window_size, data_type)
+            train_df, trade_df = standardize_data(train_df, trade_df, data_type)
 
         if apply_wavelet_transform:
             train_df=apply_wavelets_to_df(train_df,data_type)
@@ -46,25 +46,25 @@ def create_study_periods(df, window_size, trade_size, train_size, forward_roll, 
         else:
             trade_df, train_df = create_targets(train_df, trade_df, target_type, window_size, data_type)
 
-        train_df.drop(columns=['rolling_mean', data_type], inplace=True)
-        trade_df.drop(columns=['rolling_mean', data_type], inplace=True)
+        train_df.drop(columns=[data_type], inplace=True)
+        trade_df.drop(columns=[ data_type], inplace=True)
 
         #)
         study_periods.append((train_df, trade_df))
 
     return study_periods
 
-def standardize_data(train_df, trade_df, window_size, data_type):
+def standardize_data(train_df, trade_df, data_type):
     """
-    Standardizes the data based on a rolling window
+    Standardizes the data based on the training set
     """
-    train_df['rolling_mean'] = train_df.groupby('TICKER')[data_type].transform(lambda x: x.rolling(window=window_size, min_periods=1).mean())
-    mu = train_df['rolling_mean'].mean()
-    sigma = train_df['rolling_mean'].std()
-    train_df['standardized_data'] = (train_df['rolling_mean'] - mu) / sigma
+    # Calculate mean and standard deviation from the training set
+    mu = train_df[data_type].mean()
+    sigma = train_df[data_type].std()
 
-    trade_df['rolling_mean'] = trade_df.groupby('TICKER')[data_type].transform(lambda x: x.rolling(window=window_size, min_periods=1).mean())
-    trade_df['standardized_data'] = (trade_df['rolling_mean'] - mu) / sigma
+    # Standardize the daily returns in both datasets
+    train_df['standardized_data'] = (train_df[data_type] - mu) / sigma
+    trade_df['standardized_data'] = (trade_df[data_type] - mu) / sigma
 
     return train_df, trade_df
 
@@ -77,15 +77,115 @@ def create_targets(train_df, trade_df, target_type, window_size, data_type):
         train_df['target'] = (train_df.groupby('TICKER')[data_type].shift(-1) > train_df[data_type]).astype(int)
         trade_df['target'] = (trade_df.groupby('TICKER')[data_type].shift(-1) > trade_df[data_type]).astype(int)
 
-    elif target_type == 'cross_sectional_median':
-        # Calculate rolling median for each point in time in the training set
-        rolling_median = train_df.groupby('TICKER')[data_type].transform(lambda x: x.rolling(window=window_size, min_periods=1).median())
-        # Assign binary targets based on whether the data is above the rolling median
-        train_df['target'] = (train_df[data_type] >= rolling_median).astype(int)
+    if target_type == 'cross_sectional_median':
+        # For train_df
+        # Calculate the cross-sectional median for each day
+        cross_sectional_median_train = train_df.groupby('date')['standardized_data'].median()
+
+        # Shift the median backward to align with the next day's return
+        next_day_median_train = cross_sectional_median_train.shift(-1)
+
+        # Assign binary targets based on the next day's cross-sectional median
+        train_df['target'] = train_df.apply(lambda row: int(row['standardized_data'] >= next_day_median_train.get(row['date'], 0)), axis=1)
+
+        # For trade_df
+        # Calculate the cross-sectional median for each day
+        cross_sectional_median_trade = trade_df.groupby('date')['standardized_data'].median()
+
+        # Shift the median backward to align with the next day's return
+        next_day_median_trade = cross_sectional_median_trade.shift(-1)
+
+        # Use the last known median from the training set for the first day's target
+        first_day_median = next_day_median_trade.get(trade_df['date'].min(), 0)
+        if first_day_median == 0:  # In case the first day is missing in next_day_median_trade
+            first_day_median = cross_sectional_median_train.iloc[-1]
+
+        # Assign binary targets for the trading set based on the next day's cross-sectional median
+        trade_df['target'] = trade_df.apply(lambda row: int(row['standardized_data'] >= next_day_median_trade.get(row['date'], first_day_median)), axis=1)
+
+
+            # Calculate the cross-sectional median for each day in both datasets
+        cross_sectional_median_train = train_df.groupby('date')['standardized_data'].median()
+        cross_sectional_median_trade = trade_df.groupby('date')['standardized_data'].median()
+
+        # Shift the median forward in the training set for previous day median
+        prev_day_median_train = cross_sectional_median_train.shift(1).fillna(0)
+        train_df['prev_day_median'] = train_df['date'].map(prev_day_median_train)
+
+        # Start the trade_df's prev_day_median series with the last median from the training set
+        initial_median_trade = cross_sectional_median_train.iloc[-1]
+
+        # Shift the median forward in the trade set for previous day median
+        prev_day_median_trade = cross_sectional_median_trade.shift(1).fillna(initial_median_trade)
+        trade_df['prev_day_median'] = trade_df['date'].map(prev_day_median_trade)
+
+    if target_type == 'cross_sectional_mean':
+        # For train_df
+        # Calculate the cross-sectional mean for each day
+        cross_sectional_mean_train = train_df.groupby('date')['standardized_data'].mean()
+
+        # Shift the mean backward to align with the next day's return
+        next_day_mean_train = cross_sectional_mean_train.shift(-1)
+
+        # Assign binary targets based on the next day's cross-sectional mean
+        train_df['target'] = train_df.apply(lambda row: int(row['standardized_data'] >= next_day_mean_train.get(row['date'], 0)), axis=1)
+
+        # For trade_df
+        # Calculate the cross-sectional mean for each day
+        cross_sectional_mean_trade = trade_df.groupby('date')['standardized_data'].mean()
+
+        # Shift the mean backward to align with the next day's return
+        next_day_mean_trade = cross_sectional_mean_trade.shift(-1)
+
+        # Use the last known mean from the training set for the first day's target
+        first_day_mean = next_day_mean_trade.get(trade_df['date'].min(), 0)
+        if first_day_mean == 0:  # In case the first day is missing in next_day_mean_trade
+            first_day_mean = cross_sectional_mean_train.iloc[-1]
+
+        # Assign binary targets for the trading set based on the next day's cross-sectional mean
+        trade_df['target'] = trade_df.apply(lambda row: int(row['standardized_data'] >= next_day_mean_trade.get(row['date'], first_day_mean)), axis=1)
+
+        # Calculate the cross-sectional mean for each day in both datasets
+        cross_sectional_mean_train = train_df.groupby('date')['standardized_data'].mean()
+        cross_sectional_mean_trade = trade_df.groupby('date')['standardized_data'].mean()
+
+        # Shift the mean forward in the training set for previous day mean
+        prev_day_mean_train = cross_sectional_mean_train.shift(1).fillna(0)
+        train_df['prev_day_mean'] = train_df['date'].map(prev_day_mean_train)
+
+        # Start the trade_df's prev_day_mean series with the last mean from the training set
+        initial_mean_trade = cross_sectional_mean_train.iloc[-1]
+
+        # Shift the mean forward in the trade set for previous day mean
+        prev_day_mean_trade = cross_sectional_mean_trade.shift(1).fillna(initial_mean_trade)
+        trade_df['prev_day_mean'] = trade_df['date'].map(prev_day_mean_trade)
+
+
+
+
+
+
+
+    # elif target_type == 'cross_sectional_median':
+    #     # Calculate rolling median for each point in time in the training set
+    #     rolling_median = train_df.groupby('TICKER')[data_type].transform(lambda x: x.rolling(window=window_size, min_periods=1).median())
+    #     # Assign binary targets based on whether the data is above the rolling median
+    #     train_df['target'] = (train_df[data_type] >= rolling_median).astype(int)
     
-    # For the trading set, use the last calculated rolling median from the training set
-        last_rolling_median = rolling_median.iloc[-1]
-        trade_df['target'] = (trade_df[data_type] >= last_rolling_median).astype(int)
+    # # For the trading set, use the last calculated rolling median from the training set
+    #     last_rolling_median = rolling_median.iloc[-1]
+    #     trade_df['target'] = (trade_df[data_type] >= last_rolling_median).astype(int)
+
+
+    # elif target_type == 'cross_sectional_mean':
+    #     # Calculate rolling median for each point in time in the training set
+    #     rolling_mean = train_df.groupby('TICKER')[data_type].transform(lambda x: x.rolling(window=window_size, min_periods=1).mean())
+    #     # Assign binary targets based on whether the data is above the rolling median
+    #     train_df['target'] = (train_df[data_type] >= rolling_mean).astype(int)
+    
+    # # For the trading set, use the last calculated rolling median from the training set
+    #     last_rolling_mean = rolling_mean.iloc[-1]
+    #     trade_df['target'] = (trade_df[data_type] >= last_rolling_mean).astype(int)
 
     elif target_type == 'raw_return':
         # Use raw data as the target

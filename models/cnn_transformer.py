@@ -29,7 +29,7 @@ class TimeSeriesTransformerWithCNN(nn.Module):
         
         # Output layer
         if task_type == 'classification':
-            self.fc = nn.Linear(d_model, num_classes)
+            self.fc = nn.Linear(d_model, 1)
         else:  # regression
             self.fc = nn.Linear(d_model, 1)
 
