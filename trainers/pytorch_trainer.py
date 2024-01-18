@@ -26,24 +26,29 @@ from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 import torch.nn.functional as F
 
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
+import torch.nn.functional as F
+import copy
+from tqdm import tqdm
 
-
-def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=10, initial_reward=6.0, min_coverage=0.3):
+def selective_train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=2, initial_reward=2.0,num_classes=3):
     factory = ModelFactory()
-    model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config)
+    # Ensure the model has an extra output for abstention
+    # Assuming 'num_classes' is the total number of classes including abstention
+    model, criterion = factory.create(model_name, task_type, loss_name, selective=True, model_config=model_config, num_classes=num_classes)
+
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
     n_epochs = 1000
     reward = initial_reward
-    dynamic_threshold = 0.9  # Adjusted initial dynamic rejection threshold
-    penalty_factor = 60.0  # Adjusted hyperparameter for coverage penalty
-    accuracy_boost_factor = 3.0  # Adjusted hyperparameter for accuracy reward
-
-    best_loss = float('inf')
+    patience = pretrain_epochs + 10
+    best_val_loss = float('inf')
     best_model_state = None
+    counter = 0
 
-    if device.type == 'cuda' or device.type=='mps':
+    if device.type == 'cuda' or device.type == 'mps':
         num_workers = 4
         batch_size = 64
     else:
@@ -52,9 +57,7 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
     for epoch in range(n_epochs):
         model.train()
-        total_train_loss, total_samples = 0.0, 0
-        # Initialize coverage and rejection-related variables
-        total_coverage, total_non_rejected_correct, total_non_rejected_samples = 0.0, 0, 0
+        total_train_loss, total_samples, total_correct, total_train_abstained, non_abstained_correct, non_abstained_total = 0.0, 0, 0, 0, 0, 0
 
         for train_data, train_labels, _, _ in tqdm(train_test_splits):
             train_dataset = TensorDataset(train_data, train_labels)
@@ -62,67 +65,103 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
-                labels = labels.view(-1, 1).float()
+                # labels = labels.view(-1, 1).float()
+                # labels = labels.long().squeeze()
                 optimizer.zero_grad()
-
-                main_output, reservation = model(data)
-
+                outputs = model(data)
                 if epoch < pretrain_epochs:
-                    # Pretraining phase without rejection option
-                    loss = criterion(main_output, labels)
+                    loss = criterion(outputs[:, :-1], labels)
+                    predictions = torch.argmax(outputs[:, :-1], dim=1)
+                    total_correct += (predictions == labels).sum().item()
                 else:
-                    # Regular training with selective mechanism
-                    probabilities = torch.sigmoid(main_output)
-                    gain = torch.where(labels == 1, probabilities, 1 - probabilities)
+                    outputs = F.softmax(outputs, dim=1)
+                    class_outputs, abstention_output = outputs[:, :-1], outputs[:, -1]
+                    gain = torch.gather(class_outputs, dim=1, index=labels.unsqueeze(1).long()).squeeze()
+                    doubling_rate = (gain.add(abstention_output.div(reward))).log()
+                    loss = -doubling_rate.mean()
 
-                    doubling_rate = (gain + reservation.div(reward + 1e-8)).log()
-                    base_loss = -doubling_rate.mean()
+                    predictions = torch.argmax(class_outputs, dim=1)
+                    is_abstained = (abstention_output > gain).float()
+                    total_train_abstained += is_abstained.sum().item()
 
-                    # Calculate coverage and accuracy for non-rejected samples
-                    accepted = reservation < dynamic_threshold
-                    coverage = accepted.float().mean()
-                    predictions = torch.round(probabilities)
-                    correct_predictions = (predictions == labels).float()
-                    non_rejected_correct = (correct_predictions * accepted).sum()
-
-                    # Update totals
-                    total_coverage += coverage.item() * data.size(0)
-                    total_non_rejected_correct += non_rejected_correct.item()
-                    total_non_rejected_samples += accepted.sum().item()
-                    train_loss = base_loss.item() * data.size(0)
-
-                    # Penalty and rewards
-                    coverage_penalty = max(0, min_coverage - coverage) * penalty_factor
-                    accuracy_term = non_rejected_correct / (accepted.sum() + 1e-8)  # Avoid division by zero
-                    accuracy_reward = accuracy_boost_factor * accuracy_term
-                    loss = base_loss + coverage_penalty - accuracy_reward
+                    # Calculate accuracy only for non-abstained predictions
+                    non_abstained_mask = is_abstained == 0
+                    non_abstained_correct += ((predictions == labels) & non_abstained_mask).sum().item()
+                    non_abstained_total += non_abstained_mask.sum().item()
 
                 loss.backward()
                 optimizer.step()
                 total_train_loss += loss.item() * data.size(0)
                 total_samples += data.size(0)
 
-        # Update best model state and print metrics outside the inner loop
         average_loss = total_train_loss / total_samples
-        if average_loss < best_loss:
-            best_loss = average_loss
+        train_accuracy = total_correct / total_samples if epoch < pretrain_epochs else non_abstained_correct / non_abstained_total
+        train_abstain_rate = total_train_abstained / total_samples
+
+        # Validation Step with Abstention Mechanism
+        model.eval()
+        val_loss, val_correct, val_abstained_correct, total_val_samples, total_val_abstained, non_abstained_val_correct, non_abstained_val_total = 0.0, 0, 0, 0, 0, 0, 0
+        with torch.no_grad():
+            for _, _, val_data, val_labels in train_test_splits:
+                val_dataset = TensorDataset(val_data, val_labels)
+                val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+                for data, labels in val_loader:
+                    data, labels = data.to(device), labels.to(device)
+                    # labels = labels.view(-1, 1).float()
+                    # labels = labels.long().squeeze()
+                    outputs = model(data)
+                    if epoch < pretrain_epochs:
+                        loss = criterion(outputs[:, :-1], labels)
+                        predictions = torch.argmax(outputs[:, :-1], dim=1)
+                        val_correct += (predictions == labels).sum().item()
+                    else:
+                        outputs = F.softmax(outputs, dim=1)
+                        class_outputs, abstention_output = outputs[:, :-1], outputs[:, -1]
+                        gain = torch.gather(class_outputs, dim=1, index=labels.unsqueeze(1).long()).squeeze()
+                        doubling_rate = (gain.add(abstention_output.div(reward))).log()
+                        loss = -doubling_rate.mean()
+
+                        predictions = torch.argmax(class_outputs, dim=1)
+                        is_abstained = (abstention_output > gain).float()
+                        total_val_abstained += is_abstained.sum().item()
+
+                        # Calculate accuracy only for non-abstained predictions
+                        non_abstained_mask = is_abstained == 0
+                        non_abstained_val_correct += ((predictions == labels) & non_abstained_mask).sum().item()
+                        non_abstained_val_total += non_abstained_mask.sum().item()
+
+                    val_loss += loss.item() * data.size(0)
+                    total_val_samples += data.size(0)
+
+        average_val_loss = val_loss / total_val_samples
+        val_accuracy = val_correct / total_val_samples if epoch < pretrain_epochs else non_abstained_val_correct / non_abstained_val_total
+        val_abstain_rate = total_val_abstained / total_val_samples
+
+        print(f'Epoch {epoch+1}/{n_epochs}, Train Loss: {average_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, Train Abstain Rate: {train_abstain_rate:.4f}, Val Loss: {average_val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}, Val Abstain Rate: {val_abstain_rate:.4f}, Total Val Abstained: {total_val_abstained}')
+
+        # Early Stopping Check with Patience
+        if average_val_loss < best_val_loss:
+            best_val_loss = average_val_loss
             best_model_state = copy.deepcopy(model.state_dict())
-
-        average_coverage = total_coverage / total_samples if epoch >= pretrain_epochs else 0
-        non_rejected_accuracy = total_non_rejected_correct / total_non_rejected_samples if total_non_rejected_samples > 0 else 0
-        print(f'Epoch {epoch+1}/{n_epochs}, Average Train Loss: {average_loss:.4f}, '
-              f'Coverage: {average_coverage:.2f}, Non-Rejected Accuracy: {non_rejected_accuracy:.4f}')
-
-        # Adjust dynamic threshold and reward based on coverage outside the inner loop
-        if epoch >= pretrain_epochs and average_coverage < min_coverage:
-            dynamic_threshold *= 0.9  # Decrease threshold
-            reward *= 0.9  # Decrease reward
+            counter = 0
+        else:
+            counter += 1
+            if counter >= patience:
+                print('Early stopping!')
+                break
 
     if best_model_state is not None:
         torch.save(best_model_state, model_save_path)
         model.load_state_dict(best_model_state)
 
     return model
+
+
+
+
+
+
 
 
 
@@ -161,19 +200,20 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
 
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
-                labels = labels.view(-1, 1).float()
-
+                # labels = labels.view(-1, 1).float()
+                # labels = labels.squeeze(1)
                 optimizer.zero_grad()
                 mask = model.create_lookahead_mask(data.size(1)).to(device)  # Mask of size sequence length
-                outputs, _ = model(data, src_mask=mask)
+                outputs = model(data, src_mask=mask)
+                # output=outputs[:, :-1]
                 loss = criterion(outputs, labels) 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
                 optimizer.step()
 
                 total_train_loss += loss.item() * data.size(0)
-                preds = torch.sigmoid(outputs) >= 0.5
-                total_correct += (preds.view(-1, 1).float() == labels).sum().item()
+                preds = torch.argmax(outputs, dim=1)
+                total_correct += (preds== labels).sum().item()
                 total_samples += labels.size(0)
 
         average_train_loss = total_train_loss / total_samples
@@ -191,13 +231,14 @@ def train_and_save_model(model_name, task_type, loss_name, train_test_splits, de
 
                 for data, labels in val_loader:
                     data, labels = data.to(device), labels.to(device)
-                    labels = labels.view(-1, 1).float()
-
-                    outputs, _ = model(data)
+                    # labels = labels.view(-1, 1).float()
+                    mask = model.create_lookahead_mask(data.size(1)).to(device) 
+                    outputs = model(data, src_mask=mask)
+                    # output=outputs[:, :-1]
                     loss = criterion(outputs, labels)
                     val_loss += loss.item() * data.size(0)
-                    preds = torch.sigmoid(outputs) >= 0.5
-                    val_correct += (preds.view(-1, 1).float() == labels).sum().item()
+                    preds = torch.argmax(outputs, dim=1)
+                    val_correct += (preds == labels).sum().item()
                     total_val_samples += labels.size(0)
 
         average_val_loss = val_loss / total_val_samples
@@ -295,10 +336,10 @@ def main():
     data_type='RET'
     #extra features:'Mkt-RF','SMB','HML','RF'
     features=['RET','Mkt-RF','SMB','HML','RF']
-    selective=False
+    selective=True
     sequence_length=240
     if target=='cross_sectional_median' or target=='direction' or target=='cross_sectional_mean':
-        loss_func = 'bce'
+        loss_func = 'ce'
     elif target=='buckets' or 'quintiles':
         loss_func='ce'
     else:
@@ -331,9 +372,9 @@ def main():
     path='data/stock_data_with_factors.csv'
     # path='data/spy_universe.csv'
     # path='data/corrected_crsp_ff_adjusted.csv'
-    start=datetime(2012,1,1)
+    start=datetime(2010,1,1)
     df,start_date,end_date=load_data(path,features,start)
-    # df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','IBM'])]
+    df = df[df['TICKER'].isin(['AAPL','MSFT','AMZN','GOOG','IBM'])]
 
     study_periods = create_study_periods(df, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
                                          start_date=start_date, end_date=end_date, target_type=target,data_type=data_type,apply_wavelet_transform=False)

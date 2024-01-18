@@ -192,7 +192,7 @@ class RelativePositionalEncoding(nn.Module):
 
 
 class TimeSeriesTransformer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, input_features=1, dropout=0.3, task_type='regression', num_classes=1):
+    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, input_features=1, dropout=0.3, task_type='regression', num_classes=2):
         super(TimeSeriesTransformer, self).__init__()
 
         self.d_model = d_model
@@ -204,42 +204,31 @@ class TimeSeriesTransformer(nn.Module):
         # Encoder layers
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
         
-        # Output layer
-        if task_type == 'classification':
-            self.fc = nn.Linear(d_model, 1)
-        else:  # regression
-            self.fc = nn.Linear(d_model, 1)
+        self.fc = nn.Linear(d_model, num_classes  if task_type == 'classification' else 1)
 
-        self.reservation_fc = nn.Linear(d_model, 1)
 
 
     def forward(self, src, src_mask=None):
-        # Ensure src is a float tensor
-        src = src.float()
+            # Ensure src is a float tensor
+            src = src.float()
 
-        # Flatten the sequence and feature dimensions for the linear layer
-        src = src.permute(0, 2, 1)  # Flattening to [batch_size, sequence_length, features]
+            # Input processing
+            src = src.permute(0, 2, 1)  # Flattening to [batch_size, sequence_length, features]
+            src = self.input_projection(src) 
+            src = src.permute(0, 2, 1)  # [batch_size, sequence_length, d_model]
+            src *= math.sqrt(self.d_model)
 
-        # Project input to d_model size using Linear
-        src = self.input_projection(src) 
-        
-        src = src.permute(0, 2, 1)  # Now src should have the shape [batch_size, sequence_length, d_model]
+            # Encoder
+            for layer in self.encoder_layers:
+                src = layer(src, src_mask)
 
-        # Scale input embeddings
-        src *= math.sqrt(self.d_model)
+            # Context from the last time step
+            context = src[:, -1, :]
+            
+            # Output layer
+            output = self.fc(context)
 
-        # Pass through each layer of the encoder
-        for layer in self.encoder_layers:
-            src = layer(src, src_mask)
-
-        # Context from the last time step
-        context = src[:, -1, :]
-        
-        # Final linear layers
-        main_output = self.fc(context)
-        reservation_output = torch.sigmoid(self.reservation_fc(context))
-
-        return main_output, reservation_output
+            return output
 
     @staticmethod
     def create_lookahead_mask(size):

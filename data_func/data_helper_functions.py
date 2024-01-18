@@ -77,7 +77,7 @@ def create_targets(train_df, trade_df, target_type, window_size, data_type):
         train_df['target'] = (train_df.groupby('TICKER')[data_type].shift(-1) > train_df[data_type]).astype(int)
         trade_df['target'] = (trade_df.groupby('TICKER')[data_type].shift(-1) > trade_df[data_type]).astype(int)
 
-    if target_type == 'cross_sectional_median':
+    elif target_type == 'cross_sectional_median':
         # For train_df
         # Calculate the cross-sectional median for each day
         cross_sectional_median_train = train_df.groupby('date')['standardized_data'].median()
@@ -119,7 +119,7 @@ def create_targets(train_df, trade_df, target_type, window_size, data_type):
         prev_day_median_trade = cross_sectional_median_trade.shift(1).fillna(initial_median_trade)
         trade_df['prev_day_median'] = trade_df['date'].map(prev_day_median_trade)
 
-    if target_type == 'cross_sectional_mean':
+    elif target_type == 'cross_sectional_mean':
         # For train_df
         # Calculate the cross-sectional mean for each day
         cross_sectional_mean_train = train_df.groupby('date')['standardized_data'].mean()

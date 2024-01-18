@@ -27,17 +27,20 @@ class ModelFactory:
             'regression': 'regression',
         }
 
-    def create(self, model_name, target_type, loss_name,selective=False, model_config={}):
+    def create(self, model_name, target_type, loss_name, selective=False, model_config={}, num_classes=None):
         if model_name not in self.models:
             raise ValueError(f"Unknown model: {model_name}")
         if loss_name not in self.losses:
             raise ValueError(f"Unknown loss: {loss_name}")
         if target_type not in self.task_types:
             raise ValueError(f"Unknown target type: {target_type}")
-        if selective==True:
-            model = self.models[model_name](**model_config, task_type=target_type)
-        else:
-            model = self.models[model_name](**model_config, task_type=target_type)
+
+        # Update the model configuration to include the number of classes
+        model_config_updated = model_config.copy()
+        if num_classes:
+            model_config_updated['num_classes'] = num_classes
+
+        model = self.models[model_name](**model_config_updated, task_type=target_type)
         loss = self.losses[loss_name]
         return model, loss
 
