@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 
 
-def create_study_periods(df, window_size, trade_size, train_size, forward_roll, start_date, end_date, target_type='direction', standardize=True, data_type='PRICE', apply_wavelet_transform=False):
+def create_study_periods(df, window_size, trade_size, train_size, forward_roll, start_date, end_date, target_type='cross_sectional_median', standardize=True, data_type='RET', apply_wavelet_transform=False):
     """
     Create a list of study periods, each consisting of a training period and a trading period.
     ...
@@ -203,16 +203,18 @@ def create_targets(train_df, trade_df, target_type, window_size, data_type):
         # Bucketing for train_df
         for ticker, group in train_df.groupby('TICKER'):
             # Create buckets with qcut
-            buckets = pd.qcut(group[data_type], 10, labels=False, duplicates='drop')
+            buckets = pd.qcut(group[data_type], 3, labels=False, duplicates='drop')
             # Assign buckets to the train_df
             train_df.loc[group.index, 'target'] = buckets
 
         # Bucketing for trade_df
         for ticker, group in trade_df.groupby('TICKER'):
             # Create buckets with qcut
-            buckets = pd.qcut(group[data_type], 10, labels=False, duplicates='drop')
+            buckets = pd.qcut(group[data_type], 3, labels=False, duplicates='drop')
             # Assign buckets to the trade_df
             trade_df.loc[group.index, 'target'] = buckets
+        train_df['target'] = train_df['target'].astype(int)
+        trade_df['target'] = trade_df['target'].astype(int)
 
     elif target_type == 'quintiles':
         # Handle NaN or infinite values in data

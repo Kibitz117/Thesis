@@ -169,9 +169,9 @@ def selective_train_and_save_model(model_name, task_type, loss_name, train_test_
 
 
 
-def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth"):
+def train_and_save_model(model_name, task_type, loss_name, train_test_splits, device, model_config={}, model_save_path="best_model.pth",num_classes=2):
     factory = ModelFactory()
-    model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config)
+    model, criterion = factory.create(model_name, task_type, loss_name, model_config=model_config,num_classes=num_classes)
     model = model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
@@ -332,11 +332,12 @@ def main():
     #Parameters
     model_name = 'transformer'
     #cross_sectional_median, raw_returns, buckets
-    target = 'cross_sectional_median'
+    target = 'buckets'
+    num_classes=3
     data_type='RET'
     #extra features:'Mkt-RF','SMB','HML','RF'
     features=['RET','Mkt-RF','SMB','HML','RF']
-    selective=True
+    selective=False
     sequence_length=240
     if target=='cross_sectional_median' or target=='direction' or target=='cross_sectional_mean':
         loss_func = 'ce'
@@ -390,10 +391,10 @@ def main():
     
 
     if selective==True:
-        model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
+        model = selective_train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config,num_classes=num_classes)
         #Test method
     else:
-        model=train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config)
+        model=train_and_save_model(model_name, task_types[0],loss_func, train_test_splits, device,model_config,num_classes=num_classes)
         #Test method
     #export model config
     torch.save(model.state_dict(), 'model_state_dict.pth')
