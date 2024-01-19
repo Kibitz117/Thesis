@@ -1,7 +1,0 @@
-- RF exhibits abilities to model more complex relationships than linear model
-- Exploitable short term oppurtunity
-- Results change based on number of sample classes
-- High returns are arbitraged away by 2010s
-- Significant relationship between long-run profit and fundamental factors 
-- 'Market Capitalization' is their most important factor
-- They use 40 factors

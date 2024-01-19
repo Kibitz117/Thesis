@@ -10,7 +10,19 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "args": ["-Xfrozen_modules=off"],
+            "env": {"PYDEVD_DISABLE_FILE_VALIDATION": "1"}
+        },
+        {
+            "name": "Python Kernel Debug Adapter",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["-Xfrozen_modules=off"],
+            "env": {"PYDEVD_DISABLE_FILE_VALIDATION": "1"}
         }
     ]
 }
