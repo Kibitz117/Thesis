@@ -7,10 +7,11 @@ from config import config
 from pytorch_trainer import train_and_save_model, selective_train_and_save_model,load_data
 from model_analysis import  create_study_periods, create_tensors, generate_predictions,generate_predictions_with_abstention, analyze_portfolio_performance
 from model_factory import ModelFactory
-
+from datetime import datetime
 def main():
     # Load data
     df, start_date, end_date = load_data(config['data_path'], config['features'], config['start_date'])
+    end_date=datetime(2006,1,1)
     if len(config['tickers'])!=0:
         df = df[df['TICKER'].isin(config['tickers'])]
 
@@ -55,8 +56,8 @@ def main():
         predictions = generate_predictions(model, test_data,device)
     else:
         predictions,abstentions = generate_predictions_with_abstention(model,test_data,config['reward'],device)
-    portfolio = construct_portfolio(predictions, bucket_strategy=False)
-    stats = analyze_portfolio_performance(df, portfolio)
+
+    stats = analyze_portfolio_performance(df, predictions)
 
     print("Portfolio Statistics:", stats)
 

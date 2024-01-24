@@ -22,9 +22,9 @@ from torch.nn import functional as F
 from pandas import Timestamp
 
 
-def selective_train_and_save_model(model, criterion, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=10, initial_reward=2.0, num_classes=3):
+def selective_train_and_save_model(model, criterion, train_test_splits, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=5, initial_reward=2.0, num_classes=3):
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=0.0001)
+    optimizer = optim.Adam(model.parameters(), lr=0.005, weight_decay=0.0001)
     n_epochs = 1000
     reward = initial_reward
     patience = pretrain_epochs + 5
@@ -58,8 +58,6 @@ def selective_train_and_save_model(model, criterion, train_test_splits, device, 
         for train_loader in tqdm(train_loaders):
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
-                # labels = labels.view(-1, 1).float()
-                # labels = labels.long().squeeze()
                 optimizer.zero_grad()
                 outputs = model(data)
                 if epoch < pretrain_epochs:
@@ -96,11 +94,8 @@ def selective_train_and_save_model(model, criterion, train_test_splits, device, 
         val_loss, val_correct, val_abstained_correct, total_val_samples, total_val_abstained, non_abstained_val_correct, non_abstained_val_total = 1.0, 1, 1, 1, 1, 1, 1
         with torch.no_grad():
             for val_loader in val_loaders:
-
                 for data, labels in val_loader:
                     data, labels = data.to(device), labels.to(device)
-                    # labels = labels.view(-1, 1).float()
-                    # labels = labels.long().squeeze()
                     outputs = model(data)
                     if epoch < pretrain_epochs:
                         loss = criterion(outputs[:, :-1], labels)
@@ -149,17 +144,6 @@ def selective_train_and_save_model(model, criterion, train_test_splits, device, 
     return model
 
 
-
-
-
-
-
-
-
-
-
-
-
 def train_and_save_model(model, criterion, train_test_splits, device, model_config={}, model_save_path="best_model.pth", num_classes=2):
 
     optimizer = optim.Adam(model.parameters(), lr=0.005, weight_decay=0.0001)
@@ -198,8 +182,7 @@ def train_and_save_model(model, criterion, train_test_splits, device, model_conf
 
             for data, labels in train_loader:
                 data, labels = data.to(device), labels.to(device)
-                # labels = labels.view(-1, 1).float()
-                # labels = labels.squeeze(1)
+
                 optimizer.zero_grad()
                 mask = model.create_lookahead_mask(data.size(1)).to(device)  # Mask of size sequence length
                 outputs = model(data, src_mask=mask)
@@ -224,10 +207,8 @@ def train_and_save_model(model, criterion, train_test_splits, device, model_conf
         total_val_samples = 0
         with torch.no_grad():
             for val_loader in val_loaders:
-
                 for data, labels in val_loader:
                     data, labels = data.to(device), labels.to(device)
-                    # labels = labels.view(-1, 1).float()
                     mask = model.create_lookahead_mask(data.size(1)).to(device) 
                     outputs = model(data, src_mask=mask)
                     # output=outputs[:, :-1]
@@ -282,17 +263,6 @@ def load_data(path, data_type, start=None):
 
     return df, start_date, end_date
 
-
-def extract_tensors_and_labels(tensor_ticker_pairs):
-    train_data, test_data = tensor_ticker_pairs
-
-    train_tensors = [tensor for (tensor, label, ticker) in train_data]
-    train_labels = [label for (tensor, label, ticker) in train_data]
-
-    test_tensors = [tensor for (tensor, label, ticker) in test_data]
-    test_labels = [label for (tensor, label, ticker) in test_data]
-
-    return train_tensors, train_labels, test_tensors, test_labels
 
 # def main():
     # #Parameters

@@ -14,11 +14,12 @@ config = {
         'd_model': 128,
         'num_heads': 2,
         'd_ff': 256,
-        'num_encoder_layers': 4,
+        'num_encoder_layers': 3,
         'dropout': 0.1,
     },
     'data_path': 'data/stock_data_with_factors.csv',
-    'start_date': '2012-01-01',
-    'tickers': ['AXP', 'AMGN', 'AAPL', 'BA', 'CAT', 'CSCO', 'CVX', 'GS', 'HD', 'HON', 'IBM', 'INTC', 'JNJ', 'KO', 'JPM', 'MCD', 'MMM', 'MRK', 'MSFT', 'NKE', 'PG', 'TRV', 'UNH', 'CRM', 'VZ', 'V', 'WBA', 'WMT', 'DIS', 'DOW'],
+    'start_date': '2000-01-01',
+    'tickers': [],
     'model_path': 'model_state_dict.pth'
 }
+#'AXP', 'AMGN', 'AAPL', 'BA', 'CAT', 'CSCO', 'CVX', 'GS', 'HD', 'HON', 'IBM', 'INTC', 'JNJ', 'KO', 'JPM', 'MCD', 'MMM', 'MRK', 'MSFT', 'NKE', 'PG', 'TRV', 'UNH', 'CRM', 'VZ', 'V', 'WBA', 'WMT', 'DIS', 'DOW'

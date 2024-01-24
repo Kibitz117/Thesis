@@ -249,7 +249,7 @@ def apply_wavelets_to_df(df, column_name, wavelet='db6', level=3):
 
     # Add new wavelet columns to transformed df
     for i in range(level + 1):
-        transformed_df['wavelet_' + str(i)] = 0  # Initialize with zeros
+        transformed_df['wavelet_' + str(i)] = 0.0 # Initialize with zeros
 
     for ticker in df['TICKER'].unique():
         for i in range(level + 1):
