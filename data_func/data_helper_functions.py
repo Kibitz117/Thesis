@@ -72,165 +72,42 @@ def standardize_data(train_df, trade_df, data_type):
 
 
 def create_targets(train_df, trade_df, target_type, window_size, data_type):
+    #TODO: make direction/cross sectional targets based on current day returns
     if target_type == 'direction':
-        # Create binary targets based on the direction of price or return movement
-        train_df['target'] = (train_df.groupby('TICKER')[data_type].shift(-1) > train_df[data_type]).astype(int)
-        trade_df['target'] = (trade_df.groupby('TICKER')[data_type].shift(-1) > trade_df[data_type]).astype(int)
+        # Shift the return series by one day backward to avoid lookahead bias
+        train_df['target'] = (train_df[data_type].shift(-1) > 0).astype(int)
+        trade_df['target'] = (trade_df[data_type].shift(-1) > 0).astype(int)
 
-    elif target_type == 'cross_sectional_median':
-        # For train_df
-        # Calculate the cross-sectional median for each day
-        cross_sectional_median_train = train_df.groupby('date')['standardized_data'].median()
+    elif target_type in ['cross_sectional_median', 'cross_sectional_mean']:
+        # Calculate the median/mean for each day
+        for df in [train_df, trade_df]:
+            if target_type == 'cross_sectional_median':
+                cross_sectional_value = df.groupby('date')[data_type].transform('median')
+            else:  # cross_sectional_mean
+                cross_sectional_value = df.groupby('date')[data_type].transform('mean')
 
-        # Shift the median backward to align with the next day's return
-        next_day_median_train = cross_sectional_median_train.shift(-1)
+            # Shift the median/mean target by one day
+            df['target'] = df[data_type].shift(-1) >= cross_sectional_value.shift(-1)
+            df['target'] = df['target'].astype(int)
 
-        # Assign binary targets based on the next day's cross-sectional median
-        train_df['target'] = train_df.apply(lambda row: int(row['standardized_data'] >= next_day_median_train.get(row['date'], 0)), axis=1)
+    elif target_type in ['buckets', 'quintiles']:
+        # Handle buckets and quintiles with a shift
+        num_buckets = 3 if target_type == 'buckets' else 5
 
-        # For trade_df
-        # Calculate the cross-sectional median for each day
-        cross_sectional_median_trade = trade_df.groupby('date')['standardized_data'].median()
-
-        # Shift the median backward to align with the next day's return
-        next_day_median_trade = cross_sectional_median_trade.shift(-1)
-
-        # Use the last known median from the training set for the first day's target
-        first_day_median = next_day_median_trade.get(trade_df['date'].min(), 0)
-        if first_day_median == 0:  # In case the first day is missing in next_day_median_trade
-            first_day_median = cross_sectional_median_train.iloc[-1]
-
-        # Assign binary targets for the trading set based on the next day's cross-sectional median
-        trade_df['target'] = trade_df.apply(lambda row: int(row['standardized_data'] >= next_day_median_trade.get(row['date'], first_day_median)), axis=1)
-
-
-            # Calculate the cross-sectional median for each day in both datasets
-        cross_sectional_median_train = train_df.groupby('date')['standardized_data'].median()
-        cross_sectional_median_trade = trade_df.groupby('date')['standardized_data'].median()
-
-        # Shift the median forward in the training set for previous day median
-        prev_day_median_train = cross_sectional_median_train.shift(1).fillna(0)
-        train_df['prev_day_median'] = train_df['date'].map(prev_day_median_train)
-
-        # Start the trade_df's prev_day_median series with the last median from the training set
-        initial_median_trade = cross_sectional_median_train.iloc[-1]
-
-        # Shift the median forward in the trade set for previous day median
-        prev_day_median_trade = cross_sectional_median_trade.shift(1).fillna(initial_median_trade)
-        trade_df['prev_day_median'] = trade_df['date'].map(prev_day_median_trade)
-
-    elif target_type == 'cross_sectional_mean':
-        # For train_df
-        # Calculate the cross-sectional mean for each day
-        cross_sectional_mean_train = train_df.groupby('date')['standardized_data'].mean()
-
-        # Shift the mean backward to align with the next day's return
-        next_day_mean_train = cross_sectional_mean_train.shift(-1)
-
-        # Assign binary targets based on the next day's cross-sectional mean
-        train_df['target'] = train_df.apply(lambda row: int(row['standardized_data'] >= next_day_mean_train.get(row['date'], 0)), axis=1)
-
-        # For trade_df
-        # Calculate the cross-sectional mean for each day
-        cross_sectional_mean_trade = trade_df.groupby('date')['standardized_data'].mean()
-
-        # Shift the mean backward to align with the next day's return
-        next_day_mean_trade = cross_sectional_mean_trade.shift(-1)
-
-        # Use the last known mean from the training set for the first day's target
-        first_day_mean = next_day_mean_trade.get(trade_df['date'].min(), 0)
-        if first_day_mean == 0:  # In case the first day is missing in next_day_mean_trade
-            first_day_mean = cross_sectional_mean_train.iloc[-1]
-
-        # Assign binary targets for the trading set based on the next day's cross-sectional mean
-        trade_df['target'] = trade_df.apply(lambda row: int(row['standardized_data'] >= next_day_mean_trade.get(row['date'], first_day_mean)), axis=1)
-
-        # Calculate the cross-sectional mean for each day in both datasets
-        cross_sectional_mean_train = train_df.groupby('date')['standardized_data'].mean()
-        cross_sectional_mean_trade = trade_df.groupby('date')['standardized_data'].mean()
-
-        # Shift the mean forward in the training set for previous day mean
-        prev_day_mean_train = cross_sectional_mean_train.shift(1).fillna(0)
-        train_df['prev_day_mean'] = train_df['date'].map(prev_day_mean_train)
-
-        # Start the trade_df's prev_day_mean series with the last mean from the training set
-        initial_mean_trade = cross_sectional_mean_train.iloc[-1]
-
-        # Shift the mean forward in the trade set for previous day mean
-        prev_day_mean_trade = cross_sectional_mean_trade.shift(1).fillna(initial_mean_trade)
-        trade_df['prev_day_mean'] = trade_df['date'].map(prev_day_mean_trade)
-
-
-
-
-
-
-
-    # elif target_type == 'cross_sectional_median':
-    #     # Calculate rolling median for each point in time in the training set
-    #     rolling_median = train_df.groupby('TICKER')[data_type].transform(lambda x: x.rolling(window=window_size, min_periods=1).median())
-    #     # Assign binary targets based on whether the data is above the rolling median
-    #     train_df['target'] = (train_df[data_type] >= rolling_median).astype(int)
-    
-    # # For the trading set, use the last calculated rolling median from the training set
-    #     last_rolling_median = rolling_median.iloc[-1]
-    #     trade_df['target'] = (trade_df[data_type] >= last_rolling_median).astype(int)
-
-
-    # elif target_type == 'cross_sectional_mean':
-    #     # Calculate rolling median for each point in time in the training set
-    #     rolling_mean = train_df.groupby('TICKER')[data_type].transform(lambda x: x.rolling(window=window_size, min_periods=1).mean())
-    #     # Assign binary targets based on whether the data is above the rolling median
-    #     train_df['target'] = (train_df[data_type] >= rolling_mean).astype(int)
-    
-    # # For the trading set, use the last calculated rolling median from the training set
-    #     last_rolling_mean = rolling_mean.iloc[-1]
-    #     trade_df['target'] = (trade_df[data_type] >= last_rolling_mean).astype(int)
+        # Calculate buckets/quintiles and then shift
+        for df in [train_df, trade_df]:
+            for ticker, group in df.groupby('TICKER'):
+                buckets = pd.qcut(group[data_type], num_buckets, labels=False, duplicates='drop')
+                df.loc[group.index, 'target'] = buckets.shift(-1)
+            # Handle NaN values in 'target' column
+            df['target'].fillna(0, inplace=True)  # Replace 0 with a suitable default value
+            df['target'] = df['target'].astype(int)
 
     elif target_type == 'raw_return':
         # Use raw data as the target
         train_df['target'] = train_df[data_type]
         trade_df['target'] = trade_df[data_type]
 
-    elif target_type == 'buckets':
-        # Handle NaN or infinite values in data
-        for df in [train_df, trade_df]:
-            # Replace infinite values with NaN
-            df[data_type].replace([np.inf, -np.inf], np.nan, inplace=True)
-            # Fill NaN values with a specific value, e.g., the median
-            df[data_type].fillna(df[data_type].median(), inplace=True)
-
-        # Bucketing for train_df
-        for ticker, group in train_df.groupby('TICKER'):
-            # Create buckets with qcut
-            buckets = pd.qcut(group[data_type], 3, labels=False, duplicates='drop')
-            # Assign buckets to the train_df
-            train_df.loc[group.index, 'target'] = buckets
-
-        # Bucketing for trade_df
-        for ticker, group in trade_df.groupby('TICKER'):
-            # Create buckets with qcut
-            buckets = pd.qcut(group[data_type], 3, labels=False, duplicates='drop')
-            # Assign buckets to the trade_df
-            trade_df.loc[group.index, 'target'] = buckets
-        train_df['target'] = train_df['target'].astype(int)
-        trade_df['target'] = trade_df['target'].astype(int)
-
-    elif target_type == 'quintiles':
-        # Handle NaN or infinite values in data
-        for df in [train_df, trade_df]:
-            df[data_type].replace([np.inf, -np.inf], np.nan, inplace=True)
-            df[data_type].fillna(df[data_type].median(), inplace=True)
-
-        # Quintile bucketing for train_df
-        for ticker, group in train_df.groupby('TICKER'):
-            quintiles = pd.qcut(group[data_type], 5, labels=False, duplicates='drop')
-            train_df.loc[group.index, 'target'] = quintiles
-
-        # Quintile bucketing for trade_df
-        for ticker, group in trade_df.groupby('TICKER'):
-            quintiles = pd.qcut(group[data_type], 5, labels=False, duplicates='drop')
-            trade_df.loc[group.index, 'target'] = quintiles
 
     else:
         print('Invalid target type')
@@ -249,13 +126,17 @@ def process_window(in_sample_df, out_of_sample_df, sequence_length, feature_colu
 
     in_sample_data = []
     in_sample_labels = []
+    in_sample_tickers=[]
+    in_sample_dates=[]
 
     for i in range(0, len(in_sample_df) - sequence_length + 1):
         window = in_sample_df.iloc[i: i + sequence_length]
+        in_sample_tickers.append(window['TICKER'].iloc[-1])
         features = window[feature_columns].values
         label = window['target'].iloc[-1]
         in_sample_data.append(features)
         in_sample_labels.append(label)
+        in_sample_dates.append(window['date'].iloc[-1]) 
 
     in_sample_data = np.array(in_sample_data)
     in_sample_labels = np.array(in_sample_labels)
@@ -266,13 +147,17 @@ def process_window(in_sample_df, out_of_sample_df, sequence_length, feature_colu
 
     out_of_sample_data = []
     out_of_sample_labels = []
+    out_of_sample_tickers=[]
+    out_of_sample_dates=[]
 
     for i in range(0, len(out_of_sample_df) - sequence_length + 1):
         window = out_of_sample_df.iloc[i: i + sequence_length]
         features = window[feature_columns].values
+        out_of_sample_tickers.append(window['TICKER'].iloc[-1])
         label = window['target'].iloc[-1]
         out_of_sample_data.append(features)
         out_of_sample_labels.append(label)
+        out_of_sample_dates.append(window['date'].iloc[-1]) 
 
     out_of_sample_data = np.array(out_of_sample_data)
     out_of_sample_labels = np.array(out_of_sample_labels)
@@ -280,68 +165,58 @@ def process_window(in_sample_df, out_of_sample_df, sequence_length, feature_colu
     test_data = torch.tensor(out_of_sample_data, dtype=torch.float32)
     test_labels = torch.tensor(out_of_sample_labels, dtype=torch.long if task_type == 'classification' else torch.float32)
 
-    return train_data, train_labels, test_data, test_labels, task_type
+    return train_data, train_labels, test_data, test_labels, task_type,in_sample_tickers,out_of_sample_tickers,in_sample_dates,out_of_sample_dates
 
-def create_tensors(study_periods, n_jobs=6, sequence_length=240,feature_columns=None):
-    """
-    Create tensors from the study periods.
-    study_periods: List of study periods
-    n_jobs: Number of cores to use
-    sequence_length: size of tensor sequence
-    """
+
+def create_tensors(study_periods, n_jobs=6, sequence_length=240, feature_columns=None):
     results = Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(process_window)(in_sample_df, out_of_sample_df, sequence_length,feature_columns) 
+        delayed(process_window)(in_sample_df, out_of_sample_df, sequence_length, feature_columns) 
         for in_sample_df, out_of_sample_df in study_periods
     )
 
-    train_test_splits, task_types = zip(*[(result[:-1], result[-1]) for result in results])
-    
-    return train_test_splits, task_types
+    train_test_splits = []
+    ticker_date_mapping = {'train': [], 'test': []}
+    ticker_tensor_mapping = {'train': [], 'test': []}
+    task_types = []
 
-# def wavelet_transform(signal, wavelet='db2', mode='soft', level=None, control_coefficient=0.5, window_size=100):
-#     if np.isnan(signal).any():
-#         signal = np.nan_to_num(signal)
+    for result in results:
+        # Unpack the result
+        train_data, train_labels, test_data, test_labels, task_type, in_sample_tickers, out_of_sample_tickers,in_sample_dates,out_of_sample_dates = result
 
-#     denoised_signal = np.zeros_like(signal)
-    
-#     for i in range(0, len(signal), window_size):
-#         window = signal[i:i+window_size]
+        # Append train and test data to train_test_splits
+        train_test_splits.append((train_data, train_labels, test_data, test_labels))
 
-#         # Adjusting the window size for the last segment if it's smaller than window_size
-#         current_window_size = len(window)
-#         if current_window_size < window_size:
-#             window = np.pad(window, (0, window_size - current_window_size), 'constant')
-        
-#         coeffs = pywt.wavedec(window, wavelet, level=level)
-#         sigma = np.sqrt(np.mean(np.square(coeffs[-1])))
-#         epsilon = 1e-10
-#         threshold = max(control_coefficient * sigma, epsilon)
-#         denoised_coeffs = [pywt.threshold(coeff, value=threshold, mode=mode) for coeff in coeffs]
-#         denoised_coeffs = [np.nan_to_num(coeff) for coeff in denoised_coeffs]
-#         denoised_window = pywt.waverec(denoised_coeffs, wavelet)
+        # Append mappings to ticker_tensor_mapping
+        for i, ticker in enumerate(in_sample_tickers):
+            ticker_tensor_mapping['train'].append((ticker, train_data[i], train_labels[i]))
 
-#         # Adjust the denoised_window size to match the current window size
-#         denoised_window = denoised_window[:current_window_size]
+        for i, ticker in enumerate(out_of_sample_tickers):
+            ticker_tensor_mapping['test'].append((ticker, test_data[i], test_labels[i]))
+            
+        for i, (ticker, date) in enumerate(zip(in_sample_tickers, in_sample_dates)):
+            ticker_date_mapping['train'].append((ticker, date, train_data[i], train_data[i]))
 
-#         denoised_signal[i:i+current_window_size] = denoised_window
-
-#     return denoised_signal
+        for i, (ticker, date) in enumerate(zip(out_of_sample_tickers, out_of_sample_dates)):
+            ticker_date_mapping['test'].append((ticker, date, test_data[i], test_labels[i]))
 
 
-# def apply_wavelet_transform_to_df(df, column_name, wavelet='db6', mode='soft', level=None, window_size=100):
-#     transformed_df = df.copy()
+        task_types.append(task_type)
 
-#     for ticker in df['TICKER'].unique():
-#         signal = df[df['TICKER'] == ticker][column_name]
-#         transformed_signal = wavelet_transform(signal, wavelet, mode, level, window_size=window_size)
-#         transformed_df.loc[transformed_df['TICKER'] == ticker, column_name] = transformed_signal
+    # Check for consistent task type
+    if len(set(task_types)) == 1:
+        task_type = task_types[0]
+    else:
+        raise ValueError("Inconsistent task types across study periods.")
 
-#     return transformed_df
+    return train_test_splits, ticker_tensor_mapping,ticker_date_mapping, task_type
 
 
 
 
-def wavelet_mra(signal, wavelet='db6', level=3):
+
+
+
+def wavelet_mra(signal, wavelet, level):
     # Ensure the signal is at least as long as the minimum length required for the chosen level
     min_length = pywt.Wavelet(wavelet).dec_len * (2 ** level)
     if len(signal) < min_length:
@@ -363,7 +238,7 @@ def wavelet_mra(signal, wavelet='db6', level=3):
 
     return mra_components
 
-def apply_wavelets_to_df(df, column_name, wavelet='db4', level=3):
+def apply_wavelets_to_df(df, column_name, wavelet='db6', level=3):
     transformed_df = df.copy()
     wavelets = {}
 

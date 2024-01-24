@@ -204,7 +204,7 @@ class TimeSeriesTransformer(nn.Module):
         # Encoder layers
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
         
-        self.fc = nn.Linear(d_model, num_classes  if task_type == 'classification' else 1)
+        self.fc = nn.Linear(d_model, num_classes)
 
 
 

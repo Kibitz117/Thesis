@@ -5,8 +5,6 @@ sys.path.append('models')
 sys.path.append('utils')
 from transformer_model import TimeSeriesTransformer
 from cnn_transformer import TimeSeriesTransformerWithCNN
-from selective_loss import SelectiveLoss
-from sharpe_loss import SharpeLoss
 
 class ModelFactory:
     def __init__(self):
@@ -19,8 +17,6 @@ class ModelFactory:
             'bce': nn.BCEWithLogitsLoss(),
             'ce':nn.CrossEntropyLoss(),
             'mse': nn.MSELoss(),
-            'sharpe': SharpeLoss(),
-            'selective': SelectiveLoss(loss_func=nn.MSELoss(),coverage=.8),
         }
         self.task_types = {
             'classification': 'classification',
@@ -37,6 +33,8 @@ class ModelFactory:
 
         # Update the model configuration to include the number of classes
         model_config_updated = model_config.copy()
+        if selective==True:
+            num_classes=num_classes+1
         if num_classes:
             model_config_updated['num_classes'] = num_classes
 

@@ -3,172 +3,111 @@ import pandas as pd
 from datetime import datetime
 import sys
 from tqdm import tqdm
+import numpy as np
 sys.path.append('utils')
 sys.path.append('models')
 sys.path.append('data_func')
 from model_factory import ModelFactory
 from data_helper_functions import create_study_periods,create_tensors
 from torch.utils.data import DataLoader, TensorDataset
-def evaluate_model_performance(model_state_path, train_test_splits, device, model_name, target_type, model_config):
-    factory = ModelFactory()
-    model, _ = factory.create(model_name, target_type, 'bce', model_config=model_config)  # Loss is not used in evaluation
-    model.load_state_dict(torch.load(model_state_path, map_location=device))
-    model.to(device)
+
+import torch.nn.functional as F
+
+def generate_predictions(model, test_data, device, k=10):
     model.eval()
-
-    accuracy_meter = AverageMeter()
-    # Additional metrics can be initialized here if needed
-    i=0
-    for split in tqdm(train_test_splits):
-        train_data, train_labels, test_data, test_labels = split
-
-        # Evaluating on training data
-        train_accuracy = compute_accuracy(model, train_data, train_labels, device)
-        accuracy_meter.update(train_accuracy, train_data.size(0))
-
-        # Evaluating on test data
-        test_accuracy = compute_accuracy(model, test_data, test_labels, device)
-        accuracy_meter.update(test_accuracy, test_data.size(0))
-
-        # Add additional metrics calculations here if needed
-        print(f'Accuracy for Period{i}: {test_accuracy}')
-        i+=1
-
-    return {
-        "Average Accuracy": accuracy_meter.avg,
-        # Add additional metrics here
-    }
-
-def compute_accuracy(model, data, labels, device):
-    dataset = TensorDataset(data, labels)
-    loader = DataLoader(dataset, batch_size=128, shuffle=False)
-
-    total_correct = 0
-    total_samples = 0
+    predictions_by_date = {}
 
     with torch.no_grad():
-        for inputs, targets in loader:
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs, _ = model(inputs)
-            predictions = torch.sigmoid(outputs).round()
-            
-            total_correct += (predictions.view(-1) == targets).sum().item()
-            total_samples += targets.size(0)
+        for ticker, date, data, _ in test_data:
+            data_tensor = data.to(device)
+            logit = model(data_tensor.unsqueeze(0))  # Get logit
+            probability = torch.sigmoid(logit).item()  # Convert logit to probability
 
-    accuracy = (total_correct / total_samples) * 100  # Convert to percentage
-    return accuracy
+            # Organize probabilities by date and then by ticker
+            if date not in predictions_by_date:
+                predictions_by_date[date] = {}
+            predictions_by_date[date][ticker] = probability
 
-import pandas as pd
-import numpy as np
-import torch
-from torch.utils.data import DataLoader, TensorDataset
+    # Ranking and selecting top and bottom k stocks
+    ranked_portfolios = rank_stocks_by_probability(predictions_by_date, k)
+    return ranked_portfolios
 
-def create_portfolios(model_state_path, study_periods, model_name, target_type, model_config, device, sequence_length=240):
-    # Load the model
-    factory = ModelFactory()
-    model, _ = factory.create(model_name, target_type, 'bce', model_config=model_config)
-    model.load_state_dict(torch.load(model_state_path, map_location=device))
-    model.to(device)
+def rank_stocks_by_probability(predictions_by_date, k):
+    ranked_portfolios = {}
+    for date, probs in predictions_by_date.items():
+        sorted_tickers = sorted(probs, key=probs.get, reverse=True)
+        long_positions = sorted_tickers[:k]
+        short_positions = sorted_tickers[-k:]
+
+        ranked_portfolios[date] = {'long': long_positions, 'short': short_positions}
+    return ranked_portfolios
+def generate_predictions_with_abstention(model, test_data, device, k=10, reward=2.0):
     model.eval()
+    predictions_by_date = {}
+    abstentions_by_date = {}
 
-    portfolio_returns = []
+    with torch.no_grad():
+        for ticker, date, data, _ in test_data:
+            data_tensor = data.to(device)
+            outputs = model(data_tensor.unsqueeze(0))  # Get model outputs
+            outputs = F.softmax(outputs, dim=1)
+            class_outputs, abstention_output = outputs[:, :-1], outputs[:, -1]
+            
+            # Check if the model abstains
+            gain = torch.max(class_outputs).item()  # Gain of the best class
+            is_abstained = abstention_output.item() > gain / reward
 
-    for in_sample_df, out_of_sample_df in study_periods:
-        _, _, test_data, test_labels, _ = process_window(in_sample_df, out_of_sample_df, sequence_length)
+            if is_abstained:
+                # Record abstention
+                if date not in abstentions_by_date:
+                    abstentions_by_date[date] = []
+                abstentions_by_date[date].append(ticker)
+            else:
+                # Record prediction
+                prob_outperform = class_outputs[0, 1].item()  # Probability of outperforming
+                if date not in predictions_by_date:
+                    predictions_by_date[date] = {}
+                predictions_by_date[date][ticker] = prob_outperform
 
-        # Ensure data fits in memory, else consider batching
-        test_data_tensor = torch.tensor(test_data, dtype=torch.float32).to(device)
-
-        with torch.no_grad():
-            outputs, _ = model(test_data_tensor)
-            predictions = torch.sigmoid(outputs).squeeze().cpu().numpy()
-
-        # Assign predictions to out_of_sample_df
-        out_of_sample_df['model_prediction'] = predictions
-        out_of_sample_df['rank'] = out_of_sample_df.groupby('date')['model_prediction'].rank(ascending=False)
-
-        # Go long on top 10 and short on bottom 10 each day
-        long_stocks = out_of_sample_df[out_of_sample_df['rank'] <= 10]
-        short_stocks = out_of_sample_df[out_of_sample_df['rank'] > len(out_of_sample_df) - 10]
-
-        # Calculate portfolio returns
-        daily_returns = (long_stocks.groupby('date')['RET'].mean() - short_stocks.groupby('date')['RET'].mean()).reset_index()
-        daily_returns.columns = ['date', 'portfolio_return']
-        portfolio_returns.append(daily_returns)
-
-    # Combine returns from all periods
-    combined_returns = pd.concat(portfolio_returns)
-
-    return combined_returns
-
+    # Ranking and selecting top and bottom k stocks
+    ranked_portfolios = rank_stocks_by_probability(predictions_by_date, k)
+    return ranked_portfolios, abstentions_by_date
 
 
 
-class AverageMeter:
-    """Computes and stores the average and current value"""
-    def __init__(self):
-        self.reset()
 
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
+def analyze_portfolio_performance(historical_data, ranked_portfolios):
+    portfolio_daily_returns = []
+    historical_data['date'] = pd.to_datetime(historical_data['date'])
 
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count if self.count != 0 else 0
+    for date, positions in ranked_portfolios.items():
+        daily_return = 0
 
-# Load data
-target = 'cross_sectional_median'
-df = pd.read_csv('data/crsp_ff_adjusted.csv')
-df['date'] = pd.to_datetime(df['date'])
-df.dropna(subset=['RET'], inplace=True)
-df = df.drop(columns='Unnamed: 0')
-#subset df to 2014-2015
-# df = df[df['date'] >= datetime(2014, 1, 1)]
+        # Calculate the daily return for long positions
+        for ticker in positions['long']:
+            if (ticker in historical_data['TICKER'].values) and (date in historical_data['date'].values):
+                daily_return += historical_data[(historical_data['date'] == date) & (historical_data['TICKER'] == ticker)]['RET'].iloc[0]
 
-# Create tensors
-study_periods = create_study_periods(df, n_periods=23, window_size=240, trade_size=250, train_size=750, forward_roll=250, 
-                                        start_date=datetime(1990, 1, 1), end_date=datetime(2015, 12, 31), target_type=target)
-train_test_splits, task_types = create_tensors(study_periods)
+        # Calculate the daily return for short positions
+        for ticker in positions['short']:
+            if (ticker in historical_data['TICKER'].values) and (date in historical_data['date'].values):
+                daily_return -= historical_data[(historical_data['date'] == date) & (historical_data['TICKER'] == ticker)]['RET'].iloc[0]
 
-# # Example Usage
-# model_state_path = 'model_state_dict.pth'
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        portfolio_daily_returns.append(daily_return)
 
-# # Specify the model configuration
-# model_name = 'transformer'  # Replace with your model's name if different
-# target_type = 'classification'  # or 'regression', based on your model's task
-# model_config = {
-#     'd_model': 16,  # Update these parameters based on your model's configuration
-#     'num_heads': 4,
-#     'd_ff': 32,
-#     'num_encoder_layers': 1,
-#     'dropout': 0.1,
-# }
+    # Calculating metrics over time
+    portfolio_returns = np.array(portfolio_daily_returns)
+    avg_return = np.mean(portfolio_returns)
+    volatility = np.std(portfolio_returns)
+    sharpe_ratio = avg_return / volatility if volatility != 0 else 0
+    max_drawdown = np.min(portfolio_returns)  # Simplistic approach
 
-# # Ensure train_test_splits is defined and loaded as per your dataset
-# # train_test_splits = [...]
+    return {
+        "average_return": avg_return,
+        "volatility": volatility,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown": max_drawdown
+    }
 
-# performance_stats = evaluate_model_performance(model_state_path, train_test_splits, device, model_name, target_type, model_config)
-# print(performance_stats)
 
-# Example Usage
-model_state_path = 'model_state_dict.pth'
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model_name = 'transformer'
-target_type = 'classification'
-model_config = {
-    'd_model': 16,
-    'num_heads': 4,
-    'd_ff': 32,
-    'num_encoder_layers': 1,
-    'dropout': 0.1,
-}
 
-# Assuming study_periods is already defined as per your dataset
-portfolio_returns = create_portfolios(model_state_path, study_periods, model_name, target_type, model_config, device)
-print(portfolio_returns)

@@ -27,11 +27,7 @@ class TimeSeriesTransformerWithCNN(nn.Module):
         # Encoder layers
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
         
-        # Output layer
-        if task_type == 'classification':
-            self.fc = nn.Linear(d_model, 1)
-        else:  # regression
-            self.fc = nn.Linear(d_model, 1)
+        self.fc = nn.Linear(d_model, num_classes)
 
     def forward(self, src, src_mask=None):
         # Ensure src is a float tensor
@@ -55,7 +51,7 @@ class TimeSeriesTransformerWithCNN(nn.Module):
         # Final linear layer for output
         output = self.fc(context)
         #TODO:Edit later to support selective ML
-        return output,0
+        return output
     @staticmethod
     def create_lookahead_mask(size):
         mask = torch.triu(torch.ones(1, size, size), diagonal=1).bool()
