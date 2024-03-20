@@ -4,13 +4,13 @@ import sys
 sys.path.append('models')
 sys.path.append('utils')
 from transformer_model import TimeSeriesTransformer
-from cnn_transformer import TimeSeriesTransformerWithCNN
+from cnn_transformer import CNNTransformer
 
 class ModelFactory:
     def __init__(self):
         self.models = {
             'transformer': TimeSeriesTransformer,
-            'cnn_transformer':TimeSeriesTransformerWithCNN
+            'cnn_transformer':CNNTransformer
             # Add other models here
         }
         self.losses = {
@@ -23,13 +23,11 @@ class ModelFactory:
             'regression': 'regression',
         }
 
-    def create(self, model_name, target_type, loss_name, selective=False, model_config={}, num_classes=None):
+    def create(self, model_name,  loss_name, selective=False, model_config={}, num_classes=None,):
         if model_name not in self.models:
             raise ValueError(f"Unknown model: {model_name}")
         if loss_name not in self.losses:
             raise ValueError(f"Unknown loss: {loss_name}")
-        if target_type not in self.task_types:
-            raise ValueError(f"Unknown target type: {target_type}")
 
         # Update the model configuration to include the number of classes
         model_config_updated = model_config.copy()
@@ -38,7 +36,9 @@ class ModelFactory:
         if num_classes:
             model_config_updated['num_classes'] = num_classes
 
-        model = self.models[model_name](**model_config_updated, task_type=target_type)
+
+        # model = self.models[model_name](**model_config_updated, task_type=target_type)
+        model = self.models[model_name](**model_config_updated)
         loss = self.losses[loss_name]
         return model, loss
 

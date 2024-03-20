@@ -1,58 +1,83 @@
-from transformer_model import EncoderLayer
+# class CNN_Block(nn.Module):
 import torch
 import torch.nn as nn
-import math
-class ConvolutionalFeatureExtractor(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dropout=0.1):
-        super(ConvolutionalFeatureExtractor, self).__init__()
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, padding=kernel_size//2)
-        self.dropout = nn.Dropout(dropout)
-        self.relu = nn.ReLU()
 
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        return x
-class TimeSeriesTransformerWithCNN(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, input_features=1, dropout=0.3, task_type='regression', num_classes=1):
-        super(TimeSeriesTransformerWithCNN, self).__init__()
-
-        self.d_model = d_model
-        self.task_type = task_type
-
-        # Convolutional Feature Extractor layer
-        self.feature_extractor = ConvolutionalFeatureExtractor(in_channels=input_features, out_channels=d_model, kernel_size=3, dropout=dropout)
-
-        # Encoder layers
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_encoder_layers)])
+class CNN_Block(nn.Module):
+    def __init__(self, in_filters=1, out_filters=8, normalization=True, filter_size=2):
+        super(CNN_Block, self).__init__()  
+        self.in_filters = in_filters
+        self.out_filters = out_filters
         
-        self.fc = nn.Linear(d_model, num_classes)
-
-    def forward(self, src, src_mask=None):
-        # Ensure src is a float tensor
-        src = src.float()
-
-        # Apply convolutional feature extractor
-        src = src.permute(0, 2, 1)  # Reshape to [batch_size, input_features, sequence_length]
-        src = self.feature_extractor(src)  # Apply CNN
-        src = src.permute(0, 2, 1)  # Reshape back to [batch_size, sequence_length, d_model]
-
-        # Scale input embeddings
-        src *= math.sqrt(self.d_model)
-
-        # Pass through each layer of the encoder
-        for layer in self.encoder_layers:
-            src = layer(src, src_mask)
-
-        # Context from the last time step
-        context = src[:, -1, :]
+        self.conv1 = nn.Conv1d(in_channels=in_filters, out_channels=out_filters, kernel_size=filter_size,
+                                    stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros')
+        self.conv2 = nn.Conv1d(in_channels=out_filters, out_channels=out_filters, kernel_size=filter_size,
+                                    stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros')
+        self.relu = nn.ReLU(inplace=True)
+        self.left_zero_padding = nn.ConstantPad1d((filter_size-1,0),0)
         
-        # Final linear layer for output
-        output = self.fc(context)
-        #TODO:Edit later to support selective ML
-        return output
-    @staticmethod
-    def create_lookahead_mask(size):
-        mask = torch.triu(torch.ones(1, size, size), diagonal=1).bool()
-        return mask
+        self.normalization1 = nn.InstanceNorm1d(in_filters)
+        self.normalization2 = nn.InstanceNorm1d(out_filters)
+        self.normalization = normalization
+        
+    def forward(self, x): #x and out have dims (N,C,T) where C is the number of channels/filters
+        if self.normalization:
+            x = self.normalization1(x)
+        out = self.left_zero_padding(x)
+        out = self.conv1(out)
+        out = self.relu(out)
+        if self.normalization: 
+            out = self.normalization2(out)
+        out = self.left_zero_padding(out)
+        out = self.conv2(out)
+        out = self.relu(out)
+        out = out + x.repeat(1,int(self.out_filters/self.in_filters),1)   
+        return out 
+
+class CNNTransformer(nn.Module):
+    def __init__(self, 
+                    random_seed = 0, 
+                    lookback = 60,
+                    device = "mps", # other options for device are e.g. "cuda:0"
+                    normalization_conv = True, 
+                    filter_numbers = [1,8], 
+                    attention_heads = 4, 
+                    use_convolution = True,
+                    hidden_units_factor = 4,
+                    dropout = 0.25, 
+                    filter_size = 3, 
+                    use_transformer = True,num_classes=2):
+        
+        super(CNNTransformer, self).__init__()
+        # if hidden_units and hidden_units_factor and hidden_units != hidden_units_factor * filter_numbers[-1]:
+        #     raise Exception(f"`hidden_units` conflicts with `hidden_units_factor`; provide one or the other, but not both.")
+        if hidden_units_factor:
+            hidden_units = hidden_units_factor * filter_numbers[-1]
+        self.random_seed = random_seed 
+        torch.manual_seed(self.random_seed)
+        self.device = torch.device(device)
+        self.filter_numbers = filter_numbers
+        self.use_transformer = use_transformer
+        self.use_convolution = use_convolution and len(filter_numbers) > 0
+        self.is_trainable = True
+        
+        self.convBlocks = nn.ModuleList()
+        for i in range(len(filter_numbers)-1):
+            self.convBlocks.append(
+                CNN_Block(filter_numbers[i],filter_numbers[i+1],normalization=normalization_conv,filter_size=filter_size))
+        self.encoder = nn.TransformerEncoderLayer(d_model=filter_numbers[-1], nhead=attention_heads, dim_feedforward=hidden_units, dropout=dropout)
+        self.linear = nn.Linear(filter_numbers[-1],num_classes)
+        #self.softmax = nn.Sequential(nn.Linear(filter_numbers[-1],num_classes))#,nn.Softmax(dim=1))
+                    
+    def forward(self, x): # x has dimension (N, T, C)
+        N, T, C = x.shape
+        x = x.permute(0, 2, 1)  # Change to (N, C, T) to match Conv1d input requirements
+        if self.use_convolution:
+            for conv_block in self.convBlocks:
+                x = conv_block(x)  # (N, C_out, T_out), Conv1d will handle multiple channels/features
+        x = x.permute(2, 0, 1)  # Permute for transformer which expects (T, N, C_out)
+        if self.use_transformer:
+            x = self.encoder(x)  # the input of the transformer is (T, N, C_out)
+        
+        # Assuming you want to apply the output layer to the last time step's encoding
+        logits = self.linear(x[-1, :, :])  # Apply the linear layer to get logits
+        return logits
