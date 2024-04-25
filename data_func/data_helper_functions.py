@@ -14,7 +14,7 @@ import pandas_market_calendars as mcal
 from auto_encoder import StockAutoencoder
 from sklearn.linear_model import LinearRegression
 
-def create_study_period(p_idx, trading_days, df, train_size, val_size, trade_size, target_type, standardize, data_type, features):
+def create_study_period(p_idx, trading_days, df, train_size, val_size, trade_size, target_type, standardize, data_type, features,use_autoencoder):
     # Calculate the indexes for the end of each period
     train_end_idx = p_idx + train_size
     val_end_idx = train_end_idx + val_size
@@ -34,6 +34,22 @@ def create_study_period(p_idx, trading_days, df, train_size, val_size, trade_siz
     if standardize:
         train_df, val_df, trade_df = standardize_data(train_df, val_df, trade_df, features)
         train_df, val_df, trade_df = create_targets(train_df, val_df, trade_df, target_type, data_type)
+    if use_autoencoder:
+        target_feature = 'RET'
+        input_features = features
+        input_features.remove('RET')
+
+        # A dictionary of your datasets for convenience
+        datasets = {'train': train_df, 'val': val_df, 'test': trade_df}
+
+        # Process each dataset
+        processed_datasets = {name: process_dataset_with_embeddings(df, input_features, target_feature) for name, df in datasets.items()}
+
+        # Extracting the processed datasets
+        train_df = processed_datasets['train']
+        val_df = processed_datasets['val']
+        trade_df = processed_datasets['test']
+        
 
     return (train_df, val_df, trade_df)
 
@@ -41,7 +57,19 @@ def create_study_period(p_idx, trading_days, df, train_size, val_size, trade_siz
 
 
 
-def create_study_periods_parallel(df,train_size, val_size,trade_size, start_date, end_date, target_type='cross_sectional_median', standardize=True, data_type='RET',features=None):
+
+def process_dataset_with_embeddings(dataset, input_features, target_feature):
+    # Assuming `process_with_autoencoder` returns a numpy array of embeddings
+    embeddings = process_with_autoencoder(dataset, input_features, target_feature)
+    embeddings_df = pd.DataFrame(embeddings, columns=[f'embedding_{i}' for i in range(embeddings.shape[1])])
+    
+    non_feature_cols = [col for col in dataset.columns if col not in input_features]
+    non_features_df = dataset[non_feature_cols].reset_index(drop=True)
+    
+    final_df = pd.concat([non_features_df, embeddings_df], axis=1)
+    return final_df
+
+def create_study_periods_parallel(df,train_size, val_size,trade_size, start_date, end_date, target_type='cross_sectional_median', standardize=True, data_type='RET',features=None,use_autoencoder=True):
     # Create a calendar for NYSE
     nyse = mcal.get_calendar('NYSE')
     
@@ -52,18 +80,18 @@ def create_study_periods_parallel(df,train_size, val_size,trade_size, start_date
     # Calculate the start indexes for each study period based on trading days
     study_period_indexes = []
     for i in range(0, len(trading_days), trade_size):
-        if i + train_size + trade_size > len(trading_days):
+        if i + train_size + val_size+ trade_size > len(trading_days):
             break  # Stop if there aren't enough days left for a full study period
         study_period_indexes.append(i)
 
     study_periods = []
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = []
         for p_idx in study_period_indexes:
             # Submit the task to the executor
             # Collect futures in order of submission
-            futures = [executor.submit(create_study_period, p_idx, trading_days, df, train_size, val_size, trade_size, target_type, standardize, data_type, features) for p_idx in study_period_indexes]
+            futures = [executor.submit(create_study_period, p_idx, trading_days, df, train_size, val_size, trade_size, target_type, standardize, data_type, features,use_autoencoder) for p_idx in study_period_indexes]
 
             # Wait for all futures to complete and collect results in submission order
             study_periods = [future.result() for future in tqdm(futures, total=len(futures)) if future.result() is not None]
@@ -118,7 +146,7 @@ def create_targets(train_df, val_df, trade_df, target_type, data_type):
 
     return train_df, val_df, trade_df
 
-def process_with_autoencoder(window, input_features, target_feature, embedding_dim=8, num_epochs=500, batch_size=64):
+def process_with_autoencoder(window, input_features, target_feature, embedding_dim=8, num_epochs=50, batch_size=64):
     # Assuming 'df' contains your window's data with input features and a target feature
     
     # Initialize the Autoencoder
@@ -131,10 +159,11 @@ def process_with_autoencoder(window, input_features, target_feature, embedding_d
     
     # Generate embeddings
     embeddings = autoencoder.encode(features_df.values, scaler)
+    return embeddings
 
-    model = LinearRegression().fit(embeddings, window[target_feature])
-    # Calculate residuals
-    return window[target_feature] - model.predict(embeddings)
+    # model = LinearRegression().fit(embeddings, window[target_feature])
+    # # Calculate residuals
+    # return window[target_feature] - model.predict(embeddings)
 
 
 def process_period(train_df, val_df, test_df, sequence_length, feature_columns, use_autoencoder=True):
@@ -149,13 +178,16 @@ def process_period(train_df, val_df, test_df, sequence_length, feature_columns, 
         (val_df, val_windows, val_labels, val_tickers, val_dates),
         (test_df, test_windows, test_labels, test_tickers, test_dates)
     ]:
+        variability_scores = []
         for ticker, group in dataset.groupby('TICKER'):
             group = group.sort_values('date')
             for i in range(sequence_length, len(group)):
                 window = group.iloc[i-sequence_length:i][feature_columns].values
                 label = group.iloc[i]['target']
                 date = group.iloc[i]['date']
-
+                #if currently on training or validation
+                # score=np.std(window[:,3])
+                # variability_scores.append(score)
                 if use_autoencoder:
                     # Assuming `feature_columns` are the input features for the autoencoder
                     residuals = process_with_autoencoder(group.iloc[i-sequence_length:i], feature_columns, 'RET', embedding_dim=8, num_epochs=200, batch_size=64)
@@ -170,11 +202,16 @@ def process_period(train_df, val_df, test_df, sequence_length, feature_columns, 
                 dates.append(date)
 
     # Convert lists to tensors
-    train_tensor_data = torch.tensor(np.array(train_windows), dtype=torch.float32).unsqueeze(-1)
+    if len(feature_columns)<2:
+        train_tensor_data = torch.tensor(np.array(train_windows), dtype=torch.float32).unsqueeze(-1)
+        val_tensor_data = torch.tensor(np.array(val_windows), dtype=torch.float32).unsqueeze(-1)
+        test_tensor_data = torch.tensor(np.array(test_windows), dtype=torch.float32).unsqueeze(-1)
+    else:
+        train_tensor_data = torch.tensor(np.array(train_windows), dtype=torch.float32)
+        val_tensor_data = torch.tensor(np.array(val_windows), dtype=torch.float32)
+        test_tensor_data = torch.tensor(np.array(test_windows), dtype=torch.float32)
     train_tensor_labels = torch.tensor(np.array(train_labels), dtype=torch.long)
-    val_tensor_data = torch.tensor(np.array(val_windows), dtype=torch.float32).unsqueeze(-1)
     val_tensor_labels = torch.tensor(np.array(val_labels), dtype=torch.long)
-    test_tensor_data = torch.tensor(np.array(test_windows), dtype=torch.float32).unsqueeze(-1)
     test_tensor_labels = torch.tensor(np.array(test_labels), dtype=torch.long)
 
     return (train_tensor_data, train_tensor_labels, train_tickers, train_dates,
@@ -182,7 +219,62 @@ def process_period(train_df, val_df, test_df, sequence_length, feature_columns, 
             test_tensor_data, test_tensor_labels, test_tickers, test_dates)
 
 
+# def process_period(train_df, val_df, test_df, sequence_length, feature_columns, use_autoencoder=True):
+#     # Prepare containers for all data
+#     window_data = {
+#         'train': {'windows': [], 'labels': [], 'tickers': [], 'dates': [], 'variability_scores': []},
+#         'val': {'windows': [], 'labels': [], 'tickers': [], 'dates': [], 'variability_scores': []},
+#         'test': {'windows': [], 'labels': [], 'tickers': [], 'dates': [], 'variability_scores': []}
+#     }
+    
+#     # Process train, val, and test datasets
+#     for dataset, key in [(train_df, 'train'), (val_df, 'val'), (test_df, 'test')]:
+#         for ticker, group in dataset.groupby('TICKER'):
+#             group = group.sort_values('date')
+#             for i in range(sequence_length, len(group)):
+#                 window = group.iloc[i - sequence_length:i][feature_columns].values
+#                 label = group.iloc[i]['target']
+#                 date = group.iloc[i]['date']
+#                 # Calculate the variability score (e.g., standard deviation)
+#                 score = np.std(window[:, 3])  # Assuming column index 3 is the one you want to use
+#                 if use_autoencoder:
+#                     # ... your autoencoder logic
+#                     pass  # replace this with your actual logic
+#                 else:
+#                     combined_features = window
+#                 # Append data to lists
+#                 data = window_data[key]
+#                 data['windows'].append(combined_features)
+#                 data['labels'].append(label)
+#                 data['tickers'].append(ticker)
+#                 data['dates'].append(date)
+#                 data['variability_scores'].append(score)
 
+#     # Now, rank the windows within each dataset by their variability scores before converting to tensors
+#     for key in window_data:
+#         data = window_data[key]
+#         # Combine the data into a single numpy array for sorting
+#         combined = list(zip(data['windows'], data['labels'], data['tickers'], data['dates'], data['variability_scores']))
+#         # Sort based on variability scores
+#         combined_sorted = sorted(combined, key=lambda x: x[-1], reverse=True)  # Descending order for variability
+        
+#         # Unzip the sorted data back into their respective lists
+#         data['windows'], data['labels'], data['tickers'], data['dates'], data['variability_scores'] = zip(*combined_sorted)
+
+#         # Convert lists to tensors, note that the data is now sorted by variability
+#         features = np.array(data['windows'], dtype=np.float32)
+#         if len(feature_columns) < 2:
+#             data['windows'] = torch.tensor(features).unsqueeze(-1)
+#         else:
+#             data['windows'] = torch.tensor(features)
+#         data['labels'] = torch.tensor(data['labels'], dtype=torch.long)
+
+#     # Return the sorted tensors along with the other data
+#     return (
+#         window_data['train']['windows'], window_data['train']['labels'], window_data['train']['tickers'], window_data['train']['dates'],
+#         window_data['val']['windows'], window_data['val']['labels'], window_data['val']['tickers'], window_data['val']['dates'],
+#         window_data['test']['windows'], window_data['test']['labels'], window_data['test']['tickers'], window_data['test']['dates']
+#     )
 
 
 

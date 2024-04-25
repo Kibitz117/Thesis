@@ -47,7 +47,7 @@ class StockAutoencoder(nn.Module):
                 loss = criterion(outputs, targets)
                 loss.backward()
                 optimizer.step()
-            # print(f'Epoch {epoch+1}/{num_epochs}, Loss: {loss.item()}')
+            print(f'Epoch {epoch+1}/{num_epochs}, Loss: {loss.item()}')
             
         return scaler  # Return the scaler for inverse transformation later
 

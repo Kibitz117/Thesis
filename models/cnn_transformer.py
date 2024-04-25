@@ -36,15 +36,15 @@ class CNN_Block(nn.Module):
 class CNNTransformer(nn.Module):
     def __init__(self, 
                     random_seed = 0, 
-                    lookback = 60,
+                    lookback = 30,
                     device = "mps", # other options for device are e.g. "cuda:0"
                     normalization_conv = True, 
-                    filter_numbers = [1,8], 
-                    attention_heads = 4, 
+                    filter_numbers = [5,25], 
+                    attention_heads = 5, 
                     use_convolution = True,
-                    hidden_units_factor = 4,
-                    dropout = 0.25, 
-                    filter_size = 3, 
+                    hidden_units_factor = 8,
+                    dropout = 0.40, 
+                    filter_size = 2, 
                     use_transformer = True,num_classes=2):
         
         super(CNNTransformer, self).__init__()
@@ -66,6 +66,7 @@ class CNNTransformer(nn.Module):
                 CNN_Block(filter_numbers[i],filter_numbers[i+1],normalization=normalization_conv,filter_size=filter_size))
         self.encoder = nn.TransformerEncoderLayer(d_model=filter_numbers[-1], nhead=attention_heads, dim_feedforward=hidden_units, dropout=dropout)
         self.linear = nn.Linear(filter_numbers[-1],num_classes)
+        
         #self.softmax = nn.Sequential(nn.Linear(filter_numbers[-1],num_classes))#,nn.Softmax(dim=1))
                     
     def forward(self, x): # x has dimension (N, T, C)

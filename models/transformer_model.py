@@ -248,29 +248,52 @@ import torch.nn.init as init
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
+import math
 
 class TimeSeriesTransformer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, input_features=1, dropout=0.3, num_classes=2):
+    def __init__(self, d_model, num_heads, d_ff, num_encoder_layers, input_features=1, dropout=0.3, num_classes=2, max_seq_len=500):
         super().__init__()
+        self.d_model = d_model
+        self.max_seq_len = max_seq_len
         self.input_projection = nn.Conv1d(in_channels=input_features, out_channels=d_model, kernel_size=3, padding=1)
+        self.positional_encoding = self.create_positional_encoding(max_seq_len, d_model)
         encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=num_heads, dim_feedforward=d_ff, dropout=dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
         self.fc_out = nn.Linear(d_model, num_classes)
         self.src_mask = None
 
     def forward(self, src):
-        src = src.permute(0, 2, 1)  # Change to [batch, features, seq_length]
-        src = self.input_projection(src)
-        src = src.permute(2, 0, 1)  # Change to [seq_length, batch, features] as expected by Transformer
+        # Assuming src initially has shape [batch size, sequence length, features]
+        src = self.input_projection(src.permute(0, 2, 1))  # Conv1d expects [batch size, features, sequence length]
+        src = src.permute(2, 0, 1)  # Change to [sequence length, batch size, features]
+        
         if self.src_mask is None or self.src_mask.size(0) != len(src):
-            mask = self.create_lookahead_mask(src.size(0)).to(src.device)
+            self.src_mask = self.create_lookahead_mask(src.size(0)).to(src.device)
+            
+        # Adding positional encodings
+        pe = self.positional_encoding[:src.size(0), :].to(src.device)
+        src += pe
+        
         output = self.transformer_encoder(src, mask=self.src_mask)
-        output = output[-1]  # Use the last sequence output
-        return self.fc_out(output)
+# No need to permute if selecting last sequence output directly
+        output = output[-1, :, :]  # Select the last sequence output for each item in the batch
+        output = self.fc_out(output)  # Using the last sequence output for classification
+        
+        return output
+
+
 
     @staticmethod
     def create_lookahead_mask(size):
         mask = torch.triu(torch.ones(size, size), diagonal=1).type(torch.bool)
         return mask
+
+    def create_positional_encoding(self, max_len, d_model):
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        return pe

@@ -940,9 +940,10 @@ def process_subset(ticker, df):
     return get_alpha(subset)  # Make sure 'get_alpha' is correctly defined or imported.
 
 def main():
-    df = pd.read_csv('data/wq_alphas_modern.csv')
-    df = df.dropna()
-    tickers = df['TICKER'].unique()
+    # df = pd.read_csv('data/wq_alphas_modern.csv')
+    # df = df.dropna()
+    # tickers = df['TICKER'].unique()
+    df=pd.read_csv('data/nvidia_wq_alphas.csv')
 
     with ProcessPoolExecutor() as executor:
         # Fix the 'df' argument for 'process_subset'. Note that 'partial' should be applied correctly.

@@ -14,8 +14,7 @@ def save_train_test_splits(input_file, output_dir):
     data = torch.load(input_file)
     train_test_splits = data['train_test_splits']
 
-    # Create the output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
+    # Create the output directory if it doesn't exist    os.makedirs(output_dir, exist_ok=True)
 
     # Iterate over each period and save it as a separate file
     for i, period_split in enumerate(train_test_splits):

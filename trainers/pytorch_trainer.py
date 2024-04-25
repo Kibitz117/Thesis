@@ -23,109 +23,112 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 
 
-def selective_train_and_save_model(model, criterion,optimizer, periods_folder, device, model_config={}, model_save_path="best_model.pth", pretrain_epochs=5, initial_reward=2.0, num_classes=3, n_periods=None):
-    if optimizer==None:
-        optimizer = optim.AdamW(model.parameters(), lr=0.05, weight_decay=0.0001)
-    # optimizer = optim.RMSprop(model.parameters(), lr=0.009, alpha=0.99, eps=1e-08, weight_decay=0)
+import torch
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
+import torch.nn.functional as F
+import os
+import copy
+def sort_by_number(item):
+  # Extract the number part (assuming format 'top_XX%')
+  return int(item.split('_')[1].strip('%'))
 
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
-    n_epochs = 1000
-    patience = 150
+
+def selective_train_and_save_model(model, criterion, periods_folder, device, initial_reward=2.0, num_classes=3):
+    optimizer = optim.Adam(model.parameters(), lr=0.01) 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=10, verbose=True)
     best_val_loss = float('inf')
     best_model_state = None
-    counter = 0
-    best_val_loss=float('inf')
-    if device.type == 'cuda' or device.type == 'mps':
-        num_workers = 8
-        batch_size = 128
-    else:
-        num_workers = 0  # Adjust based on your environment
-        batch_size = 16
-
-    for epoch in range(n_epochs):
-        model.train()
-        total_train_loss = 0.0
-        total_samples = 0
-      
-    # Set n_periods to the number of matching files
-        if n_periods==None:
-            files = os.listdir(periods_folder)
-            period_files = [file for file in files if file.startswith("period_")]
-            n_periods = len(period_files)
-        # for period_index in tqdm(range(n_periods)):
-        for period_index in tqdm(range(0,10)):
-            file_path = os.path.join(periods_folder, f'period_{period_index}.pt')
-            period_split = torch.load(file_path, map_location='cpu')
-
-            train_data, train_labels,_,_ = period_split['train']
-            test_data, test_labels,_,_ = period_split['val']
-
-            # Load data onto the CPU and move to GPU as needed
-            train_dataset = TensorDataset(train_data.clone().detach().to(dtype=torch.float32), train_labels.clone().detach().to(dtype=torch.long))
-            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-             # Sequentially select a portion of the validation data
-            val_dataset = TensorDataset(test_data.clone().detach().to(dtype=torch.float32), test_labels.clone().detach().to(dtype=torch.long))
-
-            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-            for data, labels in train_loader:
-                data, labels = data.to(device), labels.to(device)
-
-                optimizer.zero_grad()
-                outputs = model(data)
-
-                if epoch < pretrain_epochs:
-                    loss = criterion(outputs, labels) 
-                     # Use all outputs for loss computation before abstention
-                else:
-                    
-                    # Adjust loss computation for abstention mechanism
-                    outputs = F.softmax(outputs, dim=1)
-                    class_outputs, abstention_output = outputs[:, :-1], outputs[:, -1]
-                    gain = torch.gather(class_outputs, 1, labels.unsqueeze(1)).squeeze()
-                    doubling_rate = (gain + abstention_output.div(initial_reward)).log()
-                    loss = -doubling_rate.mean()
-                    
-
-                loss.backward()
-                optimizer.step()
-                total_train_loss += loss.item() * data.size(0)
-                total_samples += data.size(0)
-
-        scheduler.step()
-
-        # Validation logic
-        if epoch >= pretrain_epochs:
-            # Replace validate_with_abstention with your actual validation function that supports abstention
-            current_val_loss = validate_with_abstention(model, val_loader, criterion, device, initial_reward)
-            # initial_reward = adjust_reward(current_val_loss, best_val_loss, initial_reward)
+    patience =15
+    batch_size = 512 if device.type in ['cuda', 'mps'] else 16
+    num_workers = 6 if device.type in ['cuda', 'mps'] else 0
+    avg_score_weight=[]
+    curriculum_folders = [f for f in os.listdir(periods_folder) if os.path.isdir(os.path.join(periods_folder, f))]
+    curriculum_folders=sorted(curriculum_folders, key=sort_by_number)
+    num_curriculums = len(curriculum_folders)
+    final_curriculum_idx = num_curriculums - 1
+    avg_res_weight=0
+    # Iterate through each curriculum folder
+    for curriculum_idx, curriculum_folder in enumerate((curriculum_folders)):
+        if curriculum_idx not in {0}:
+            continue
+        print(f"\nStarting training on curriculum: {curriculum_folder}")
+        if curriculum_idx > 0:
+            print("Resetting learning rate.")
+            for g in optimizer.param_groups:
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.1, patience=10, verbose=True)
+                optimizer.lr = .01 
+                epoch=0
         
-        else:
-            # Replace validate_without_abstention with your actual validation function for the initial phase
-            current_val_loss = validate_without_abstention(model, val_loader, criterion, device)
+        current_folder_path = os.path.join(periods_folder, curriculum_folder)
+        period_files = sorted([f for f in os.listdir(current_folder_path) if f.startswith("period_")])
+        
+        counter = 0 
+        best_val_loss=np.inf # Reset early stopping counter for each curriculum
+        
+        for epoch in range(1000):  # Placeholder for max epochs, subject to early stopping
+            model.train()
+            total_train_loss = 0
+            total_samples = 0
+            
+            for period_file in tqdm(period_files, desc="Training"):
+                file_path = os.path.join(current_folder_path, period_file)
+                period_data = torch.load(file_path, map_location='cpu')
+                train_data, train_labels, val_data, val_labels = period_data['train'][0], period_data['train'][1], period_data['val'][0], period_data['val'][1]
 
-        # Update best validation loss and model state
-        if current_val_loss < best_val_loss and epoch>=pretrain_epochs:
-            best_val_loss = current_val_loss
-            best_model_state = copy.deepcopy(model.state_dict())
-            counter = 0
-        elif epoch>=pretrain_epochs:
-            counter += 1
+                train_dataset = TensorDataset(train_data.to(dtype=torch.float32), train_labels.to(dtype=torch.long))
+                train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-        if counter >= patience:
-            print('Early stopping!')
-            break
+                val_dataset = TensorDataset(val_data.to(dtype=torch.float32), val_labels.to(dtype=torch.long))
+                val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
-        # Logging for each epoch
-        print(f'Epoch {epoch+1}: Train Loss: {total_train_loss / total_samples:.4f}, Current Val Loss: {current_val_loss:.4f}, Best Val Loss: {best_val_loss:.4f}, Current Reward: {initial_reward:.2f}')
+                for data, labels in train_loader:
+                    data, labels = data.to(device), labels.to(device)
+                    optimizer.zero_grad()
+                    outputs = model(data)
+                    
+                    if  epoch>15 and curriculum_idx==final_curriculum_idx:
+                        outputs = F.softmax(outputs, dim=1)
+                        class_outputs, abstention_output = outputs[:, :-1], outputs[:, -1]
+                        gain = torch.gather(class_outputs, 1, labels.unsqueeze(1)).squeeze()
+                        doubling_rate = (gain + abstention_output.div(initial_reward)).log()
+                        loss = -doubling_rate.mean()
+                    else:
+                        loss = criterion(outputs, labels)
+                    
+                    loss.backward()
+                    optimizer.step()
+                    total_train_loss += loss.item() * data.size(0)
+                    total_samples += data.size(0)
+            #and counter>10
+            if  epoch>20 and curriculum_idx==final_curriculum_idx:
+                val_loss,reservation_weight,score_weight = validate_with_abstention(model, val_loader,criterion, device, initial_reward)
+                avg_res_weight=reservation_weight
+                avg_score_weight.append(score_weight)
+            else:
+                val_loss = validate_without_abstention(model, val_loader, criterion, device)
+            scheduler.step(val_loss)
 
-    # Save the best model state
-    if best_model_state is not None:
-        torch.save(best_model_state, model_save_path)
-        print(f'Best model saved to {model_save_path}')
-    
-    return model
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_model_state = copy.deepcopy(model.state_dict())
+                counter = 0  # Reset counter on improvement
+            else:
+                counter += 1  # Increment counter if no improvement
+            
+            print(f'Epoch: {epoch+1}/{1000}, Curriculum: {curriculum_folder}, Train Loss: {total_train_loss / total_samples:.4f}, Val Loss: {val_loss:.4f}')
+            
+            if counter >= patience and curriculum_idx == final_curriculum_idx:
+                break 
+            elif counter>=patience and curriculum_idx != final_curriculum_idx:
+                print(f"\nNo improvement for {patience} epochs in curriculum: {curriculum_folder}. Moving to next curriculum.") # Breaks from the epoch loop, moving to the next curriculum
+                break
+    if best_model_state:
+        torch.save(best_model_state, "best_model.pth")
+        print("\nBest model saved.")
+        return model,np.mean(avg_res_weight),np.mean(avg_score_weight)
+
 
 
 # Helper functions for validation with and without abstention
@@ -135,37 +138,45 @@ def validate_with_abstention(model, val_loader, criterion, device, reward):
     total_val_correct = 0
     total_val_samples = 0
     total_val_abstained = 0
+    reservation_values = []
+    score_values = []
 
     with torch.no_grad():
-            for data, labels in val_loader:
-                data, labels = data.to(device), labels.to(device)
-                outputs = model(data)
+        for data, labels in val_loader:
+            data, labels = data.to(device), labels.to(device)
+            outputs = model(data)
 
-                outputs = F.softmax(outputs, dim=1)
-                class_outputs, abstention_output = outputs[:, :-1], outputs[:, -1]
-                gain = torch.gather(class_outputs, dim=1, index=labels.unsqueeze(1)).squeeze()
-                doubling_rate = (gain.add(abstention_output.div(reward))).log()
-                loss = -doubling_rate.mean()
+            outputs = F.softmax(outputs, dim=1)
+            class_outputs, abstention_output = outputs[:, :-1], outputs[:, -1]
+            gain = torch.gather(class_outputs, dim=1, index=labels.unsqueeze(1)).squeeze()
+            doubling_rate = (gain.add(abstention_output.div(reward))).log()
+            loss = -doubling_rate.mean()
 
-                # is_abstained = (abstention_output > gain / reward).float()
-                # total_val_abstained += is_abstained.sum().item()
-                
-                # Adjust loss for non-abstained samples
-                # non_abstained_mask = ~is_abstained.bool()
-                # effective_loss = loss * non_abstained_mask
-                total_val_loss += loss.item() * data.size(0) # Sum up effective loss
+            # Calculate weights
+            reservation_values.extend(abstention_output.cpu().numpy().tolist())
+            score_values.extend(class_outputs.cpu().numpy().tolist())
 
-                # predictions = torch.argmax(class_outputs, dim=1)
-                # correct = (predictions == labels) & non_abstained_mask
-                # total_val_correct += correct.sum().item()
+            # Accumulate loss
+            total_val_loss += loss.item() * data.size(0) 
 
-                total_val_samples += data.size(0)  # Total samples including abstained
+            total_val_samples += data.size(0)  
 
-    average_val_loss = total_val_loss / (total_val_samples ) if total_val_samples > 0 else 0
-    # val_accuracy = total_val_correct / (total_val_samples - total_val_abstained) if total_val_samples > total_val_abstained else 0
-    # val_abstain_rate=total_val_abstained/total_val_samples if total_val_samples > 0 else 0
+        # Calculate the correlation between reservation/score values and targets
+        reservation_correlation = np.corrcoef(reservation_values, val_loader.dataset.tensors[1].cpu().numpy())[0, 1]
+        predicted_classes = np.max(score_values, axis=1)
+        actual_labels = val_loader.dataset.tensors[1].cpu().numpy().flatten()
+        score_correlation = np.corrcoef(predicted_classes, actual_labels)[0, 1]
 
-    return average_val_loss
+
+        # Calculate weights based on correlation with correct predictions
+        total_correlation = abs(reservation_correlation) + abs(score_correlation)
+        reservation_weight = abs(reservation_correlation) / total_correlation
+        score_weight = abs(score_correlation) / total_correlation
+
+        average_val_loss = total_val_loss / total_val_samples if total_val_samples > 0 else 0
+
+        return average_val_loss, reservation_weight, score_weight
+
 
 
 def adjust_reward(current_val_loss, best_val_loss, initial_reward, adjustment_factor=0.1):
